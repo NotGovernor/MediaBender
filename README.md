@@ -8,7 +8,11 @@
   <strong>AI-assisted FFmpeg video transcoding.</strong>
 </p>
 
-Desktop app: Tauri v2 + SolidJS + Rust. You bring FFmpeg. An OpenAI-compatible API (or a local server) writes the argv; you review and approve before anything is encoded.
+Uses your favorite AI model to inspect, plan, and automate media transcoding. For a large video library you need to curate, or for frequently massaging files from infinite codecs into a planned target.
+
+You bring FFmpeg. An OpenAI-compatible API (or a local server) writes the argv; you review and approve before anything is encoded.
+
+Desktop app: Tauri v2 + SolidJS + Rust.
 
 ## Screenshots
 
