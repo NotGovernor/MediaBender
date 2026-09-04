@@ -67,7 +67,7 @@ npm install
 
 ## Publishing
 
-Do not `gh repo create`, `git push`, or `gh release create` until a human has smoke-tested the real window (add, scan, generate, approve, start, stop/delete incomplete) and asked to publish. CI workflows are in-tree and inert without a remote. DefaultGuidelines.md is the author's; do not genericize it in a drive-by.
+DefaultGuidelines.md is the author's; do not genericize it in a drive-by.
 
 
 

@@ -10,11 +10,29 @@
 
 Desktop app: Tauri v2 + SolidJS + Rust. You bring FFmpeg. An OpenAI-compatible API (or a local server) writes the argv; you review and approve before anything is encoded.
 
+## Screenshots
+
+Work Queue: probe a folder, then generate commands, approve, and start.
+
+<p align="center">
+  <img src="assets/screenshots/work-queue.jpg" alt="MediaBender Work Queue with probed files pending command generation" width="100%" />
+</p>
+
+Review: AI description and reasoning, editable FFmpeg args, approve or regenerate.
+
+<p align="center">
+  <img src="assets/screenshots/review-command.jpg" alt="Review dialog with AI description, editable FFmpeg command, and Approve" width="100%" />
+</p>
+
+Completed job: status, size change, command used, reset or reprocess.
+
+<p align="center">
+  <img src="assets/screenshots/job-complete.jpg" alt="Completed job detail with input/output sizes, AI reasoning, and FFmpeg command" width="100%" />
+</p>
+
 ## Download
 
 Installers (Windows NSIS, macOS DMG, Linux AppImage): [GitHub Releases](https://github.com/NotGovernor/MediaBender/releases).
-
-Until the first `v*` tag finishes, run from source (Develop below).
 
 macOS and Linux builds are not well tested.
 
@@ -43,7 +61,7 @@ Do not share `node_modules` between WSL and Windows (`lightningcss` is native).
 
 ## License
 
-See [`LICENSE`](LICENSE). GitHub may label this “Other”; that is the three-layer waiver + MIT + estoppel grant, not a missing file.
+See [`LICENSE`](LICENSE).
 
 ## Code of conduct
 
