@@ -1,0 +1,335 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
+import TopBar from "./TopBar";
+import {
+  setWorkQueue,
+  setSettings,
+  workQueue,
+  isProcessing,
+  setIsGenerating,
+  logEntries,
+  clearLogs,
+} from "../stores/appStore";
+import { createMockFile, createMockQueue } from "../test-helpers";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+describe("TopBar", () => {
+  beforeEach(() => {
+    clearLogs();
+    setIsGenerating(false);
+    setWorkQueue(createMockQueue());
+
+    setSettings({
+      providers: [
+        { base_url: "http://localhost", api_key: "key", model: "model" },
+      ],
+      active_provider_index: 0,
+      ffmpeg_path: "/usr/bin/ffmpeg",
+      ffprobe_path: "/usr/bin/ffprobe",
+      default_output_folder: "/media/output",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+    });
+  });
+
+  it("does not set approved Pending files to Processing when Start Processing is clicked", async () => {
+    const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    const fileB = createMockFile({ id: "b", status: "Pending", is_approved: true });
+    const fileC = createMockFile({ id: "c", status: "Pending", is_approved: false });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB, fileC] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    render(() => <TopBar />);
+
+    const startButton = screen.getByText("Start Processing");
+    fireEvent.click(startButton);
+
+    await waitFor(() => {
+      const files = workQueue().files;
+      expect(files.find((f) => f.id === "a")!.status).toBe("Pending");
+      expect(files.find((f) => f.id === "b")!.status).toBe("Pending");
+      expect(files.find((f) => f.id === "c")!.status).toBe("Pending");
+      expect(isProcessing()).toBe(false);
+    });
+  });
+
+  it("invokes stop_processing without locally resetting Processing files", async () => {
+    const fileA = createMockFile({ id: "a", status: "Processing", is_approved: true });
+    const fileB = createMockFile({ id: "b", status: "Processing", is_approved: true });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    render(() => <TopBar />);
+
+    const stopButton = screen.getByText("Stop");
+    fireEvent.click(stopButton);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("stop_processing");
+    });
+
+    const files = workQueue().files;
+    expect(files.find((f) => f.id === "a")!.status).toBe("Processing");
+    expect(files.find((f) => f.id === "b")!.status).toBe("Processing");
+    expect(isProcessing()).toBe(true);
+  });
+
+  it("does not locally reset files when start_processing fails", async () => {
+    const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    const fileB = createMockFile({ id: "b", status: "Completed", is_approved: true });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockRejectedValueOnce("No eligible files to process");
+
+    render(() => <TopBar />);
+
+    fireEvent.click(screen.getByText("Start Processing"));
+
+    await waitFor(() => {
+      const errorLogs = logEntries().filter((e) => e.level === "error");
+      expect(errorLogs.some((e) => e.message.includes("Failed to start processing"))).toBe(true);
+    });
+
+    const files = workQueue().files;
+    expect(files.find((f) => f.id === "a")!.status).toBe("Pending");
+    expect(files.find((f) => f.id === "b")!.status).toBe("Completed");
+  });
+
+  it("does not set target files to Generating locally when Generate Commands is clicked", async () => {
+    const fileA = createMockFile({
+      id: "a",
+      status: "Pending",
+      generated_command: "",
+      metadata: {
+        container: "mkv",
+        video: { codec: "h264", width: 1920, height: 1080, hdr: false, bit_depth: 8, fps: 24 },
+        audio_streams: [{ index: 0, codec: "aac", channels: 2, layout: "stereo" }],
+        subtitle_streams: [],
+        subtitle_count: 0,
+        has_chapters: false,
+        duration: 3600,
+        bitrate: 5000000,
+      },
+    });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveInvoke: (value: any) => void;
+    const deferred = new Promise<any>((resolve) => {
+      resolveInvoke = resolve;
+    });
+    vi.mocked(invoke).mockReturnValueOnce(deferred);
+
+    render(() => <TopBar />);
+
+    const generateButton = screen.getByText("Generate Commands") as HTMLButtonElement;
+    fireEvent.click(generateButton);
+
+    expect(workQueue().files.find((f) => f.id === "a")!.status).toBe("Pending");
+    expect(generateButton.querySelector("svg")).toBeTruthy();
+
+    resolveInvoke!(
+      createMockQueue([
+        {
+          ...fileA,
+          generated_command: "ffmpeg -i input.mkv output.mkv",
+          command_args: "-c:v copy -c:a opus",
+          description: "Transcode to HEVC",
+          reasoning: "Smaller file size",
+          error_message: "",
+          status: "Pending",
+          updated_at: new Date().toISOString(),
+          output_path: "/media/output/Generated.mkv",
+        },
+      ])
+    );
+
+    await waitFor(() => {
+      expect(workQueue().files.find((f) => f.id === "a")!.status).toBe("Pending");
+    });
+  });
+
+  it("disables Approve All when no items have a generated command and are unapproved", () => {
+    const fileA = createMockFile({ id: "a", generated_command: "", is_approved: false });
+    const fileB = createMockFile({ id: "b", generated_command: "cmd", is_approved: true });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+
+    render(() => <TopBar />);
+
+    const approveAllButton = screen.getByText("Approve All") as HTMLButtonElement;
+    expect(approveAllButton.disabled).toBe(true);
+  });
+
+  it("sets is_approved to true on eligible items when Approve All is clicked", async () => {
+    const fileA = createMockFile({ id: "a", generated_command: "cmd-a", is_approved: false });
+    const fileB = createMockFile({ id: "b", generated_command: "cmd-b", is_approved: false });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValue(
+      createMockQueue([
+        { ...fileA, is_approved: true },
+        { ...fileB, is_approved: true },
+      ])
+    );
+
+    render(() => <TopBar />);
+
+    const approveAllButton = screen.getByText("Approve All") as HTMLButtonElement;
+    expect(approveAllButton.disabled).toBe(false);
+
+    fireEvent.click(approveAllButton);
+
+    await waitFor(() => {
+      const files = workQueue().files;
+      expect(files.find((f) => f.id === "a")!.is_approved).toBe(true);
+      expect(files.find((f) => f.id === "b")!.is_approved).toBe(true);
+    });
+  });
+
+  it("skips items without commands or already approved when Approve All is clicked", async () => {
+    const fileA = createMockFile({ id: "a", generated_command: "cmd-a", is_approved: false });
+    const fileB = createMockFile({ id: "b", generated_command: "", is_approved: false });
+    const fileC = createMockFile({ id: "c", generated_command: "cmd-c", is_approved: true });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB, fileC] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValue(
+      createMockQueue([
+        { ...fileA, is_approved: true },
+        fileB,
+        fileC,
+      ])
+    );
+
+    render(() => <TopBar />);
+
+    const approveAllButton = screen.getByText("Approve All") as HTMLButtonElement;
+    fireEvent.click(approveAllButton);
+
+    await waitFor(() => {
+      const files = workQueue().files;
+      expect(files.find((f) => f.id === "a")!.is_approved).toBe(true);
+      expect(files.find((f) => f.id === "b")!.is_approved).toBe(false);
+      expect(files.find((f) => f.id === "c")!.is_approved).toBe(true);
+    });
+  });
+
+  it("logs how many items were approved when Approve All is clicked", async () => {
+    const fileA = createMockFile({ id: "a", generated_command: "cmd-a", is_approved: false });
+    const fileB = createMockFile({ id: "b", generated_command: "cmd-b", is_approved: false });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValue(
+      createMockQueue([
+        { ...fileA, is_approved: true },
+        { ...fileB, is_approved: true },
+      ])
+    );
+
+    render(() => <TopBar />);
+
+    const approveAllButton = screen.getByText("Approve All") as HTMLButtonElement;
+    fireEvent.click(approveAllButton);
+
+    await waitFor(() => {
+      const infoLogs = logEntries().filter((e) => e.level === "info");
+      const approvalLog = infoLogs.find((e) => e.message.includes("Approved"));
+      expect(approvalLog).toBeDefined();
+      expect(approvalLog!.message).toContain("2");
+    });
+  });
+
+  it("patches command_args into the store after Generate Commands succeeds", async () => {
+    const fileA = createMockFile({
+      id: "a",
+      status: "Pending",
+      generated_command: "",
+      command_args: "",
+    });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(
+      createMockQueue([
+        {
+          ...fileA,
+          generated_command: "ffmpeg -i input.mkv output.mkv",
+          command_args: "-c:v copy -c:a opus",
+          description: "Transcode to HEVC",
+          reasoning: "Smaller file size",
+          error_message: "",
+          status: "Pending",
+          updated_at: new Date().toISOString(),
+          output_path: "/media/output/Generated.mkv",
+        },
+      ])
+    );
+
+    render(() => <TopBar />);
+
+    const generateButton = screen.getByText("Generate Commands") as HTMLButtonElement;
+    fireEvent.click(generateButton);
+
+    await waitFor(() => {
+      const files = workQueue().files;
+      expect(files.find((f) => f.id === "a")!.command_args).toBe("-c:v copy -c:a opus");
+    });
+  });
+
+  it("patches output_path into the store after Generate Commands succeeds", async () => {
+    const fileA = createMockFile({
+      id: "a",
+      status: "Pending",
+      generated_command: "",
+      output_path: "",
+    });
+
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(
+      createMockQueue([
+        {
+          ...fileA,
+          generated_command: "ffmpeg -i input.mkv output.mkv",
+          command_args: "-c:v copy -c:a opus",
+          description: "Transcode to HEVC",
+          reasoning: "Smaller file size",
+          error_message: "",
+          status: "Pending",
+          updated_at: new Date().toISOString(),
+          output_path: "/media/output/Generated.mkv",
+        },
+      ])
+    );
+
+    render(() => <TopBar />);
+
+    const generateButton = screen.getByText("Generate Commands") as HTMLButtonElement;
+    fireEvent.click(generateButton);
+
+    await waitFor(() => {
+      const files = workQueue().files;
+      expect(files.find((f) => f.id === "a")!.output_path).toBe("/media/output/Generated.mkv");
+    });
+  });
+});

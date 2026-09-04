@@ -1,0 +1,125 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
+import SettingsPage from "./SettingsPage";
+import { setSettings, settings } from "../stores/appStore";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+describe("SettingsPage provider card header", () => {
+  beforeEach(() => {
+    setSettings({
+      providers: [
+        { base_url: "https://api1.com", api_key: "key1", model: "model1" },
+        { base_url: "https://api2.com", api_key: "key2", model: "model2" },
+      ],
+      active_provider_index: 0,
+      ffmpeg_path: "",
+      ffprobe_path: "",
+      default_output_folder: "",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+    });
+  });
+
+  it("selects a provider when its card header is clicked", () => {
+    render(() => <SettingsPage />);
+
+    const secondProviderTitle = screen.getByText("api2.com - model2");
+    fireEvent.click(secondProviderTitle);
+
+    expect(settings().active_provider_index).toBe(1);
+  });
+
+  it("removes a provider without selecting it when Remove is clicked", () => {
+    render(() => <SettingsPage />);
+
+    const removeButtons = screen.getAllByText("Remove");
+    expect(removeButtons.length).toBe(2);
+
+    fireEvent.click(removeButtons[1]);
+
+    expect(settings().providers.length).toBe(1);
+    expect(settings().active_provider_index).toBe(0);
+  });
+});
+
+describe("SettingsPage provider input focus", () => {
+  beforeEach(() => {
+    setSettings({
+      providers: [
+        { base_url: "", api_key: "", model: "" },
+      ],
+      active_provider_index: 0,
+      ffmpeg_path: "",
+      ffprobe_path: "",
+      default_output_folder: "",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+    });
+  });
+
+  it("preserves the Base URL input DOM node across provider updates", () => {
+    render(() => <SettingsPage />);
+
+    const baseUrlInput = screen.getByPlaceholderText("https://api.example.com/v1");
+
+    // Trigger an update that mutates the provider in place.
+    // With <For>, referential equality changes cause DOM recreation.
+    fireEvent.input(baseUrlInput, { target: { value: "h" } });
+
+    // Re-query the DOM. If the node was recreated, this will be a different element.
+    const baseUrlInputAfter = screen.getByPlaceholderText("https://api.example.com/v1");
+
+    expect(baseUrlInputAfter).toBe(baseUrlInput);
+    expect((baseUrlInputAfter as HTMLInputElement).value).toBe("h");
+  });
+
+  it("preserves the API Key input DOM node across provider updates", () => {
+    render(() => <SettingsPage />);
+
+    const apiKeyInput = screen.getByPlaceholderText("sk-...");
+
+    fireEvent.input(apiKeyInput, { target: { value: "s" } });
+
+    const apiKeyInputAfter = screen.getByPlaceholderText("sk-...");
+
+    expect(apiKeyInputAfter).toBe(apiKeyInput);
+    expect((apiKeyInputAfter as HTMLInputElement).value).toBe("s");
+  });
+});
+
+describe("SettingsPage Verify FFmpeg", () => {
+  beforeEach(() => {
+    setSettings({
+      providers: [],
+      active_provider_index: 0,
+      ffmpeg_path: "C:/ffmpeg/ffmpeg.exe",
+      ffprobe_path: "C:/ffmpeg/ffprobe.exe",
+      default_output_folder: "",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+    });
+  });
+
+  it("persists settings before verifying paths", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const calls: string[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      calls.push(cmd);
+      if (cmd === "verify_ffmpeg_paths") return [true, true];
+      if (cmd === "load_settings") return settings();
+      return undefined;
+    });
+
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("FFmpeg Paths"));
+    fireEvent.click(screen.getByText("Verify FFmpeg"));
+
+    await waitFor(() => {
+      expect(calls).toEqual(["save_settings", "verify_ffmpeg_paths", "load_settings"]);
+    });
+    expect(invoke).toHaveBeenCalledWith("save_settings", { newSettings: settings() });
+  });
+});
