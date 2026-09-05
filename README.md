@@ -42,6 +42,8 @@ macOS and Linux builds are not well tested.
 
 Unsigned binaries: Windows SmartScreen → More info → Run anyway. macOS Gatekeeper → right-click Open.
 
+From 0.3.0, a packaged app can check GitHub Releases and install the next version itself (sidebar footer). 0.1.x / 0.2.x still download from this page.
+
 ## FFmpeg
 
 MediaBender does **not** ship FFmpeg. Install it yourself, then set/verify paths in Settings.
