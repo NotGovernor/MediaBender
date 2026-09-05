@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Sidebar from "./components/Sidebar";
 import ConfirmDialog from "./components/ConfirmDialog";
+import UpdateDialog from "./components/UpdateDialog";
 import ReviewModal from "./components/ReviewModal";
 import DetailModal from "./components/DetailModal";
 import FFprobeRawModal from "./components/FFprobeRawModal";
@@ -261,6 +262,7 @@ export default function App() {
           <PreflightModal />
         </Show>
         <ConfirmDialog />
+        <UpdateDialog onInstall={() => {}} onOpenDownload={() => {}} />
       </div>
     </div>
   );

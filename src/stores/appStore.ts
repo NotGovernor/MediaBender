@@ -113,6 +113,15 @@ export const [confirmDialogConfig, setConfirmDialogConfig] = createSignal<{
   onConfirm: () => void;
 } | null>(null);
 
+export type UpdateDialogPhase = "idle" | "confirm" | "downloading" | "error";
+
+export const [updateDialogPhase, setUpdateDialogPhase] =
+  createSignal<UpdateDialogPhase>("idle");
+export const [updateTargetVersion, setUpdateTargetVersion] = createSignal("");
+export const [updateNotes, setUpdateNotes] = createSignal("");
+export const [updateProgress, setUpdateProgress] = createSignal("");
+export const [updateError, setUpdateError] = createSignal("");
+
 export function openReview(fileId: string) {
   setSelectedFileId(fileId);
   setReviewModalOpen(true);
