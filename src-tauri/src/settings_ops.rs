@@ -35,6 +35,7 @@ mod tests {
             default_output_folder: String::new(),
             naming_template: String::new(),
             max_parallel: 1,
+            check_updates_on_startup: true,
         };
 
         let (ffmpeg_found, ffprobe_found) = verify_ffmpeg_paths(&mut settings);
@@ -55,6 +56,7 @@ mod tests {
             default_output_folder: String::new(),
             naming_template: String::new(),
             max_parallel: 1,
+            check_updates_on_startup: true,
         };
 
         let (ffmpeg_found, ffprobe_found) = verify_ffmpeg_paths(&mut settings);

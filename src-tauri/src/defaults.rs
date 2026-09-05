@@ -23,6 +23,7 @@ pub fn default_settings() -> AppSettings {
         default_output_folder: String::new(),
         naming_template: "{name}.mkv".to_string(),
         max_parallel: 1,
+        check_updates_on_startup: true,
     }
 }
 

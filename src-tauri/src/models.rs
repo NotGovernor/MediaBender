@@ -148,6 +148,37 @@ mod tests {
             FileStatus::Skipped
         );
     }
+
+    #[test]
+    fn missing_check_updates_on_startup_defaults_true() {
+        let json = r#"{
+            "providers": [],
+            "active_provider_index": 0,
+            "ffmpeg_path": "",
+            "ffprobe_path": "",
+            "default_output_folder": "",
+            "naming_template": "{name}.mkv",
+            "max_parallel": 1
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).expect("old settings must deserialize");
+        assert!(s.check_updates_on_startup);
+    }
+
+    #[test]
+    fn check_updates_on_startup_false_roundtrips() {
+        let json = r#"{
+            "providers": [],
+            "active_provider_index": 0,
+            "ffmpeg_path": "",
+            "ffprobe_path": "",
+            "default_output_folder": "",
+            "naming_template": "{name}.mkv",
+            "max_parallel": 1,
+            "check_updates_on_startup": false
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert!(!s.check_updates_on_startup);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -196,6 +227,12 @@ pub struct AppSettings {
     pub default_output_folder: String,
     pub naming_template: String,
     pub max_parallel: i32,
+    #[serde(default = "default_check_updates_on_startup")]
+    pub check_updates_on_startup: bool,
+}
+
+fn default_check_updates_on_startup() -> bool {
+    true
 }
 
 
