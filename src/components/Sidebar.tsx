@@ -1,4 +1,12 @@
-import { currentView, setCurrentView, workQueue } from "../stores/appStore";
+import { Show } from "solid-js";
+import {
+  currentView,
+  setCurrentView,
+  workQueue,
+  appVersion,
+  availableUpdateVersion,
+} from "../stores/appStore";
+import { formatAvailableNote } from "../lib/updates";
 import type { View } from "../types";
 
 const navItems: { view: View; label: string; icon: string }[] = [
@@ -7,7 +15,7 @@ const navItems: { view: View; label: string; icon: string }[] = [
   { view: "guidelines", label: "Guidelines", icon: "📝" },
 ];
 
-export default function Sidebar() {
+export default function Sidebar(props: { onVersionClick?: () => void }) {
   const fileCount = () => workQueue().files.length;
 
   return (
@@ -47,7 +55,16 @@ export default function Sidebar() {
 
       {/* Footer */}
       <div class="p-3 border-t border-border">
-        <div class="text-xs text-text-muted">v0.1.0</div>
+        <button type="button" onClick={props.onVersionClick}>
+          <Show when={appVersion()}>
+            <span class="text-xs text-text-muted">v{appVersion()}</span>
+          </Show>
+          <Show when={availableUpdateVersion()}>
+            <span class="text-xs text-gold">
+              {formatAvailableNote(availableUpdateVersion()!)}
+            </span>
+          </Show>
+        </button>
       </div>
     </aside>
   );

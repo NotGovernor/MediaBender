@@ -121,6 +121,8 @@ export const [updateTargetVersion, setUpdateTargetVersion] = createSignal("");
 export const [updateNotes, setUpdateNotes] = createSignal("");
 export const [updateProgress, setUpdateProgress] = createSignal("");
 export const [updateError, setUpdateError] = createSignal("");
+export const [appVersion, setAppVersion] = createSignal("");
+export const [availableUpdateVersion, setAvailableUpdateVersion] = createSignal<string | null>(null);
 
 export function openReview(fileId: string) {
   setSelectedFileId(fileId);

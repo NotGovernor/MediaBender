@@ -1,6 +1,7 @@
 import { Match, Switch, Show, createEffect, onMount, createSignal, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import Sidebar from "./components/Sidebar";
 import ConfirmDialog from "./components/ConfirmDialog";
 import UpdateDialog from "./components/UpdateDialog";
@@ -21,6 +22,8 @@ import {
   updateFile,
   preflightModalOpen,
   isScanning,
+  appVersion,
+  setAppVersion,
 } from "./stores/appStore";
 import { scanQueue } from "./lib/autoScanner";
 import { checkAndRunDeferredScan } from "./lib/deferredScan";
@@ -107,6 +110,12 @@ export default function App() {
         }
       }
     });
+
+    try {
+      setAppVersion(await getVersion());
+    } catch {
+      /* ignore in tests / non-tauri */
+    }
 
     try {
       const loadedSettings = await invoke<AppSettings>("load_settings");
@@ -218,7 +227,7 @@ export default function App() {
 
   return (
     <div class="h-full flex bg-bg-primary text-text-primary">
-      <Sidebar />
+      <Sidebar onVersionClick={() => {}} />
 
       <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Show when={ffmpegMissing() || ffprobeMissing()}>
@@ -262,7 +271,11 @@ export default function App() {
           <PreflightModal />
         </Show>
         <ConfirmDialog />
-        <UpdateDialog onInstall={() => {}} onOpenDownload={() => {}} />
+        <UpdateDialog
+          currentVersion={appVersion()}
+          onInstall={() => {}}
+          onOpenDownload={() => {}}
+        />
       </div>
     </div>
   );
