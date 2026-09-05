@@ -56,6 +56,7 @@ describe("GuidelinesPage interview entry", () => {
       default_output_folder: "",
       naming_template: "{name}.mkv",
       max_parallel: 1,
+      check_updates_on_startup: true,
     });
   });
 
@@ -93,6 +94,7 @@ describe("GuidelinesPage interview entry", () => {
       default_output_folder: "",
       naming_template: "{name}.mkv",
       max_parallel: 1,
+      check_updates_on_startup: true,
     });
 
     render(() => <GuidelinesPage />);

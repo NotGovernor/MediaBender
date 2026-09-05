@@ -95,6 +95,7 @@ export interface AppSettings {
   default_output_folder: string;
   naming_template: string;
   max_parallel: number;
+  check_updates_on_startup: boolean;
 }
 
 export type View = "dashboard" | "settings" | "guidelines";

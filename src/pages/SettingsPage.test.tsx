@@ -20,6 +20,7 @@ describe("SettingsPage provider card header", () => {
       default_output_folder: "",
       naming_template: "{name}.mkv",
       max_parallel: 1,
+      check_updates_on_startup: true,
     });
   });
 
@@ -57,6 +58,7 @@ describe("SettingsPage provider input focus", () => {
       default_output_folder: "",
       naming_template: "{name}.mkv",
       max_parallel: 1,
+      check_updates_on_startup: true,
     });
   });
 
@@ -100,6 +102,7 @@ describe("SettingsPage Verify FFmpeg", () => {
       default_output_folder: "",
       naming_template: "{name}.mkv",
       max_parallel: 1,
+      check_updates_on_startup: true,
     });
   });
 

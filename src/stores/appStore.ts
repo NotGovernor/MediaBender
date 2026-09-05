@@ -141,6 +141,7 @@ export const [settings, setSettings] = createSignal<AppSettings>({
   default_output_folder: "",
   naming_template: "{name}.mkv",
   max_parallel: 1,
+  check_updates_on_startup: true,
 });
 
 // ── Logs ──
