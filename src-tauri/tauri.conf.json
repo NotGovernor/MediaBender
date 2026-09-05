@@ -41,6 +41,18 @@
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFQzM0ODYyMzc1QTk5MDAKUldRQW1WbzNZa2pEdmdOQi9CNTNPUy9UTTArM2pHUWNpWDYvRHpYRFgrblQzOHlHUWZsdWEvUnIK",
+      "endpoints": [
+        "https://github.com/NotGovernor/MediaBender/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
