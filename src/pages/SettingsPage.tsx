@@ -1,6 +1,8 @@
-import { For, Index, createSignal, createEffect } from "solid-js";
+import { For, Index, Show, createSignal, createEffect } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { settings, setSettings } from "../stores/appStore";
+import { settings, setSettings, appVersion, availableUpdateVersion } from "../stores/appStore";
+import { formatAvailableNote } from "../lib/updates";
+import { openDownloadPage, performCheck } from "../lib/updateSession";
 import type { AIProviderConfig, AppSettings } from "../types";
 
 function getProviderTitle(provider: AIProviderConfig): string {
@@ -374,6 +376,49 @@ export default function SettingsPage() {
                 class="w-full bg-bg-tertiary border border-border rounded px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-gold/50"
               />
               <p class="text-xs text-text-muted mt-1">Number of files to process simultaneously (1 = sequential)</p>
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-text-muted mb-1">Updates</label>
+              <p class="text-sm text-text-primary">Current version: v{appVersion()}</p>
+              <Show
+                when={availableUpdateVersion()}
+                fallback={<p class="text-sm text-text-muted">Up to date</p>}
+              >
+                {(version) => (
+                  <p class="text-sm text-gold">{formatAvailableNote(version())}</p>
+                )}
+              </Show>
+              <label class="flex items-center gap-2 mt-3">
+                <input
+                  type="checkbox"
+                  checked={settings().check_updates_on_startup}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      check_updates_on_startup: e.currentTarget.checked,
+                    }))
+                  }
+                  class="accent-gold"
+                />
+                <span class="text-sm text-text-primary">Check for updates on startup</span>
+              </label>
+              <div class="flex items-center gap-3 mt-3">
+                <button
+                  type="button"
+                  onClick={() => performCheck({ silent: false })}
+                  class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors"
+                >
+                  Check for updates
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openDownloadPage()}
+                  class="text-sm text-gold underline hover:opacity-80"
+                >
+                  Open download page
+                </button>
+              </div>
             </div>
           </div>
         )}

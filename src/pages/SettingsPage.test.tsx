@@ -1,10 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
 import SettingsPage from "./SettingsPage";
-import { setSettings, settings } from "../stores/appStore";
+import { setSettings, settings, setAppVersion, setAvailableUpdateVersion } from "../stores/appStore";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: vi.fn(),
 }));
 
 describe("SettingsPage provider card header", () => {
@@ -124,5 +132,35 @@ describe("SettingsPage Verify FFmpeg", () => {
       expect(calls).toEqual(["save_settings", "verify_ffmpeg_paths", "load_settings"]);
     });
     expect(invoke).toHaveBeenCalledWith("save_settings", { newSettings: settings() });
+  });
+});
+
+describe("SettingsPage Execution updates", () => {
+  beforeEach(() => {
+    setSettings({
+      providers: [],
+      active_provider_index: 0,
+      ffmpeg_path: "",
+      ffprobe_path: "",
+      default_output_folder: "",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+      check_updates_on_startup: true,
+    });
+    setAppVersion("");
+    setAvailableUpdateVersion(null);
+  });
+
+  it("execution_tab_shows_updates_toggle", () => {
+    setAppVersion("0.3.0");
+    render(() => <SettingsPage />);
+
+    fireEvent.click(screen.getByText("Execution"));
+
+    expect(screen.getByText("Current version: v0.3.0")).toBeTruthy();
+    const toggle = screen.getByLabelText("Check for updates on startup");
+    expect(toggle).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(settings().check_updates_on_startup).toBe(false);
   });
 });
