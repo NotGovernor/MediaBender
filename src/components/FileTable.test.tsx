@@ -6,6 +6,7 @@ import {
   setReviewModalOpen,
   setDetailModalOpen,
   setSelectedFileId,
+  setFileDropHovering,
   reviewModalOpen,
   detailModalOpen,
   workQueue,
@@ -71,6 +72,28 @@ describe("FileTable", () => {
     setReviewModalOpen(false);
     setDetailModalOpen(false);
     setSelectedFileId(null);
+    setFileDropHovering(false);
+  });
+
+  it("empty_state_mentions_drop_files_or_folders", () => {
+    render(() => <FileTable />);
+    expect(screen.getByText("No files in queue")).toBeTruthy();
+    expect(
+      screen.getByText("Drop files or folders, or click Add Files")
+    ).toBeTruthy();
+  });
+
+  it("shows_drop_overlay_when_file_drop_hovering", () => {
+    setFileDropHovering(true);
+    render(() => <FileTable />);
+    expect(screen.getByTestId("file-drop-overlay")).toBeTruthy();
+    expect(screen.getByText("Drop videos or folders")).toBeTruthy();
+  });
+
+  it("hides_drop_overlay_when_not_hovering", () => {
+    setFileDropHovering(false);
+    render(() => <FileTable />);
+    expect(screen.queryByTestId("file-drop-overlay")).toBeFalsy();
   });
 
   it("opens ReviewModal when clicking an Error item with no generated_command", () => {

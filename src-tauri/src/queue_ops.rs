@@ -2,7 +2,7 @@ use crate::ai;
 use crate::command_builder::{assemble_command, resolve_output_path};
 use crate::ffprobe::analyze_file;
 use crate::models::{AiProviderConfig, AiResponse, FileStatus, VideoFile, WorkQueue};
-use crate::scanner::{create_video_file, scan_directory};
+use crate::scanner::{create_video_file, is_video_file, scan_directory};
 use std::collections::HashSet;
 
 fn apply_ai_response(
@@ -350,6 +350,54 @@ pub fn add_folder(queue: &mut WorkQueue, folder: &str) -> usize {
         added += 1;
     }
     added
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddPathsStats {
+    pub added: usize,
+    pub skipped_non_video: usize,
+    pub skipped_duplicates: usize,
+}
+
+pub fn add_paths(queue: &mut WorkQueue, paths: Vec<String>) -> AddPathsStats {
+    let mut seen: HashSet<String> = queue
+        .files
+        .iter()
+        .map(|f| normalize_path_key(&f.input_path))
+        .collect();
+    let mut stats = AddPathsStats::default();
+
+    for path in paths {
+        if std::path::Path::new(&path).is_dir() {
+            for file in scan_directory(&path, true) {
+                let key = normalize_path_key(&file.input_path);
+                if !seen.insert(key) {
+                    stats.skipped_duplicates += 1;
+                    continue;
+                }
+                queue.files.push(file);
+                stats.added += 1;
+            }
+            continue;
+        }
+
+        if !is_video_file(&path) {
+            stats.skipped_non_video += 1;
+            continue;
+        }
+
+        let key = normalize_path_key(&path);
+        if !seen.insert(key) {
+            stats.skipped_duplicates += 1;
+            continue;
+        }
+        if let Some(file) = create_video_file(&path, None) {
+            queue.files.push(file);
+            stats.added += 1;
+        }
+    }
+
+    stats
 }
 
 fn apply_regenerate_reset(file: &mut VideoFile, feedback: Option<&str>) {
@@ -1008,6 +1056,107 @@ mod tests {
         let added_folder = add_folder(&mut queue, dir.to_str().unwrap());
         assert_eq!(added_folder, 1);
         assert_eq!(queue.files.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_paths_adds_loose_videos_skips_non_video() {
+        let dir = std::env::temp_dir().join(format!(
+            "mb_add_paths_loose_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mkv = dir.join("a.mkv");
+        let txt = dir.join("notes.txt");
+        std::fs::write(&mkv, b"x").unwrap();
+        std::fs::write(&txt, b"x").unwrap();
+
+        let mut queue = test_queue(vec![]);
+        let stats = add_paths(
+            &mut queue,
+            vec![
+                mkv.to_string_lossy().to_string(),
+                txt.to_string_lossy().to_string(),
+            ],
+        );
+        assert_eq!(stats.added, 1);
+        assert_eq!(stats.skipped_non_video, 1);
+        assert_eq!(stats.skipped_duplicates, 0);
+        assert_eq!(queue.files.len(), 1);
+        assert!(queue.files[0].input_path.ends_with("a.mkv"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_paths_recurses_folders_like_add_folder() {
+        let dir = std::env::temp_dir().join(format!(
+            "mb_add_paths_folder_{}",
+            std::process::id()
+        ));
+        let nested = dir.join("season");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.join("root.mkv"), b"x").unwrap();
+        std::fs::write(nested.join("ep.mkv"), b"x").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"x").unwrap();
+
+        let mut queue = test_queue(vec![]);
+        let stats = add_paths(&mut queue, vec![dir.to_string_lossy().to_string()]);
+        assert_eq!(stats.added, 2);
+        assert_eq!(stats.skipped_non_video, 0);
+        assert_eq!(stats.skipped_duplicates, 0);
+        assert_eq!(queue.files.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_paths_mixed_files_and_folder_dedupes() {
+        let dir = std::env::temp_dir().join(format!(
+            "mb_add_paths_mixed_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = dir.join("one.mkv");
+        let two = dir.join("two.mkv");
+        std::fs::write(&one, b"x").unwrap();
+        std::fs::write(&two, b"x").unwrap();
+
+        let mut queue = test_queue(vec![]);
+        let stats = add_paths(
+            &mut queue,
+            vec![
+                one.to_string_lossy().to_string(),
+                dir.to_string_lossy().to_string(),
+            ],
+        );
+        assert_eq!(stats.added, 2);
+        assert_eq!(stats.skipped_duplicates, 1);
+        assert_eq!(stats.skipped_non_video, 0);
+        assert_eq!(queue.files.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_paths_counts_duplicate_loose_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "mb_add_paths_dupe_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mkv = dir.join("a.mkv");
+        std::fs::write(&mkv, b"x").unwrap();
+
+        let mut queue = test_queue(vec![]);
+        let path = mkv.to_string_lossy().to_string();
+        let first = add_paths(&mut queue, vec![path.clone()]);
+        assert_eq!(first.added, 1);
+        let second = add_paths(&mut queue, vec![path]);
+        assert_eq!(second.added, 0);
+        assert_eq!(second.skipped_duplicates, 1);
+        assert_eq!(queue.files.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

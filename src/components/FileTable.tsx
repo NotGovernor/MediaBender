@@ -9,6 +9,7 @@ import {
   selectedFileId,
   closeModals,
   addLog,
+  isFileDropHovering,
 } from "../stores/appStore";
 import type { VideoFile, FileStatus, WorkQueue } from "../types";
 
@@ -85,14 +86,14 @@ export default function FileTable() {
   const files = queueFiles;
 
   return (
-    <div class="flex-1 overflow-auto">
+    <div class="flex-1 overflow-auto relative">
       <Show
         when={files().length > 0}
         fallback={
           <div class="h-full flex flex-col items-center justify-center text-text-muted">
             <div class="text-4xl mb-4">📂</div>
             <p class="text-sm mb-2">No files in queue</p>
-            <p class="text-xs">Click "Add Files" to get started</p>
+            <p class="text-xs">Drop files or folders, or click Add Files</p>
           </div>
         }
       >
@@ -156,6 +157,14 @@ export default function FileTable() {
             </For>
           </tbody>
         </table>
+      </Show>
+      <Show when={isFileDropHovering()}>
+        <div
+          data-testid="file-drop-overlay"
+          class="absolute inset-0 z-20 pointer-events-none flex items-center justify-center border-2 border-dashed border-gold bg-gold/10"
+        >
+          <p class="text-sm text-gold">Drop videos or folders</p>
+        </div>
       </Show>
     </div>
   );

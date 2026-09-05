@@ -210,6 +210,14 @@ pub struct WorkQueue {
     pub last_modified: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AddPathsResult {
+    pub queue: WorkQueue,
+    pub added: usize,
+    pub skipped_non_video: usize,
+    pub skipped_duplicates: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiResponse {
     pub command: String,

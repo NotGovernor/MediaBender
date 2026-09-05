@@ -72,6 +72,13 @@ export interface WorkQueue {
   last_modified: string;
 }
 
+export interface AddPathsResult {
+  queue: WorkQueue;
+  added: number;
+  skipped_non_video: number;
+  skipped_duplicates: number;
+}
+
 export interface AIProviderConfig {
   base_url: string;
   api_key: string;

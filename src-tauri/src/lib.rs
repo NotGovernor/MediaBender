@@ -19,7 +19,7 @@ use app_startup::{AppState, build_app_state};
 use persistence::{JsonFileStore, Persistence};
 use settings_ops::verify_ffmpeg_paths as verify_ffmpeg_paths_impl;
 use queue_ops::{
-    add_files as add_files_impl, add_folder as add_folder_impl,
+    add_files as add_files_impl, add_folder as add_folder_impl, add_paths as add_paths_impl,
     apply_command_template as apply_command_template_impl, approve_file as approve_file_impl,
     clear_files as clear_files_impl, generate_commands_snapshots, remove_file as remove_file_impl,
     reset_file as reset_file_impl, scan_and_analyze_snapshots, skip_file as skip_file_impl,
@@ -59,6 +59,22 @@ async fn add_folder(folder_path: String, state: tauri::State<'_, AppState>) -> R
     let mut queue = state.queue.lock().await;
     add_folder_impl(&mut queue, &folder_path);
     persist_queue(&state.store, &mut queue)
+}
+
+#[tauri::command]
+async fn add_paths(
+    paths: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<AddPathsResult, String> {
+    let mut queue = state.queue.lock().await;
+    let stats = add_paths_impl(&mut queue, paths);
+    let queue = persist_queue(&state.store, &mut queue)?;
+    Ok(AddPathsResult {
+        queue,
+        added: stats.added,
+        skipped_non_video: stats.skipped_non_video,
+        skipped_duplicates: stats.skipped_duplicates,
+    })
 }
 
 #[tauri::command]
@@ -328,7 +344,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
-            add_files, add_folder, remove_file, clear_queue, approve_file, unapprove_file,
+            add_files, add_folder, add_paths, remove_file, clear_queue, approve_file, unapprove_file,
             skip_file, reset_file, scan_and_analyze, generate_commands, apply_command_template,
             fetch_models, verify_ffmpeg_paths, start_processing, stop_processing, delete_output_file,
             save_queue, load_queue, load_settings, save_settings, load_guidelines, save_guidelines, get_default_guidelines, interview_guidelines,

@@ -11,33 +11,10 @@ import {
   setConfirmDialogConfig,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
+import { scanPendingAfterAdd } from "../lib/scanPendingAfterAdd";
 
 export default function BottomBar() {
   const [dropdownOpen, setDropdownOpen] = createSignal(false);
-
-  const pendingScanIds = () =>
-    workQueue()
-      .files.filter((f) => !f.metadata && f.status === "Pending")
-      .map((f) => f.id);
-
-  const maybeScanPending = async () => {
-    const s = settings();
-    const fileIds = pendingScanIds();
-    if (!s.ffprobe_path) {
-      addLog({
-        timestamp: new Date().toISOString(),
-        level: "info",
-        message: "Files will be scanned once FFprobe is configured.",
-      });
-      return;
-    }
-    if (fileIds.length === 0) return;
-    const scanned = await invoke<WorkQueue>("scan_and_analyze", {
-      fileIds,
-      ffprobePath: s.ffprobe_path,
-    });
-    setWorkQueue(scanned);
-  };
 
   const handleAddFiles = async () => {
     setDropdownOpen(false);
@@ -63,7 +40,7 @@ export default function BottomBar() {
         message: `Added ${paths.length} file(s) to queue`,
       });
 
-      await maybeScanPending();
+      await scanPendingAfterAdd();
     } catch (err) {
       addLog({
         timestamp: new Date().toISOString(),
@@ -91,7 +68,7 @@ export default function BottomBar() {
         message: `Added folder to queue: ${selected}`,
       });
 
-      await maybeScanPending();
+      await scanPendingAfterAdd();
     } catch (err) {
       addLog({
         timestamp: new Date().toISOString(),

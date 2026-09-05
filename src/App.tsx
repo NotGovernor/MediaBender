@@ -2,6 +2,7 @@ import { Match, Switch, Show, createEffect, onMount, createSignal, onCleanup } f
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import Sidebar from "./components/Sidebar";
@@ -22,20 +23,32 @@ import {
   setWorkQueue,
   addLog,
   updateFile,
+  reviewModalOpen,
+  detailModalOpen,
+  ffprobeRawModalOpen,
   preflightModalOpen,
+  confirmDialogOpen,
   isScanning,
   appVersion,
   setAppVersion,
   availableUpdateVersion,
+  updateDialogPhase,
   setUpdateDialogPhase,
   setUpdateProgress,
   setUpdateError,
+  setFileDropHovering,
 } from "./stores/appStore";
 import { scanQueue } from "./lib/autoScanner";
 import { checkAndRunDeferredScan } from "./lib/deferredScan";
 import { isQueueBlockingUpdate, shouldCheckOnLaunch } from "./lib/updates";
 import { getLastUpdate, setLastUpdate, performCheck, openDownloadPage } from "./lib/updateSession";
-import type { AppSettings, WorkQueue } from "./types";
+import {
+  shouldAcceptFileDrop,
+  nextFileDropHover,
+  applyFileDrop,
+} from "./lib/fileDrop";
+import { scanPendingAfterAdd } from "./lib/scanPendingAfterAdd";
+import type { AddPathsResult, AppSettings, WorkQueue } from "./types";
 
 // Debounce helpers for auto-save
 let settingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -136,8 +149,15 @@ export default function App() {
 
   // ── Executor event listener ──
   let unlistenExecutor: (() => void) | null = null;
+  let unlistenDrag: (() => void) | undefined;
+  const preventNav = (e: DragEvent) => {
+    e.preventDefault();
+  };
 
   onMount(async () => {
+    window.addEventListener("dragover", preventNav);
+    window.addEventListener("drop", preventNav);
+
     // Listen for executor events from backend
     unlistenExecutor = await listen("executor-event", (event) => {
       const payload = event.payload as {
@@ -213,6 +233,41 @@ export default function App() {
       /* ignore in tests / non-tauri */
     }
 
+    let dropInFlight = false;
+    try {
+      unlistenDrag = await getCurrentWebview().onDragDropEvent(async (event) => {
+        const accept = shouldAcceptFileDrop({
+          view: currentView(),
+          reviewModalOpen: reviewModalOpen(),
+          detailModalOpen: detailModalOpen(),
+          ffprobeRawModalOpen: ffprobeRawModalOpen(),
+          preflightModalOpen: preflightModalOpen(),
+          confirmDialogOpen: confirmDialogOpen(),
+          updateDialogOpen: updateDialogPhase() !== "idle",
+        });
+        const type = event.payload.type;
+        setFileDropHovering(nextFileDropHover(type, accept));
+        if (type !== "drop") return;
+        if (!accept) return;
+        if (dropInFlight) return;
+        dropInFlight = true;
+        try {
+          const paths = event.payload.paths;
+          await applyFileDrop(paths, {
+            accept: true,
+            addPaths: (p) => invoke<AddPathsResult>("add_paths", { paths: p }),
+            setWorkQueue,
+            addLog,
+            scanAfterAdd: scanPendingAfterAdd,
+          });
+        } finally {
+          dropInFlight = false;
+        }
+      });
+    } catch {
+      /* ignore in tests / non-tauri */
+    }
+
     try {
       const loadedSettings = await invoke<AppSettings>("load_settings");
       setSettings(loadedSettings);
@@ -259,6 +314,9 @@ export default function App() {
   });
 
   onCleanup(() => {
+    window.removeEventListener("dragover", preventNav);
+    window.removeEventListener("drop", preventNav);
+    unlistenDrag?.();
     if (unlistenExecutor) unlistenExecutor();
   });
 

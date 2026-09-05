@@ -178,3 +178,6 @@ export const [isScanning, setIsScanning] = createSignal(false);
 
 // ── Generating State ──
 export const [isGenerating, setIsGenerating] = createSignal(false);
+
+// ── File drop hover (FileTable overlay; App sets) ──
+export const [isFileDropHovering, setFileDropHovering] = createSignal(false);
