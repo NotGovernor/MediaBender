@@ -9,6 +9,7 @@ interface ModalProps {
   maxWidth?: string;
   cardClass?: string;
   zIndex?: string;
+  bodyClass?: string;
 }
 
 export default function Modal(props: ModalProps) {
@@ -56,7 +57,7 @@ export default function Modal(props: ModalProps) {
           </div>
 
           {/* Body */}
-          <div class="flex-1 overflow-y-auto p-6">{props.children}</div>
+          <div class={props.bodyClass ?? "flex-1 overflow-y-auto p-6"}>{props.children}</div>
         </div>
       </div>
     </Show>

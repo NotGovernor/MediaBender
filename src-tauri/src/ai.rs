@@ -1,4 +1,5 @@
-use crate::models::{AiProviderConfig, AiResponse, FileMetadata};
+use crate::interview_ops::{host_os_label, interview_begin_user, interview_system_prompt, parse_interview_reply};
+use crate::models::{AiProviderConfig, AiResponse, ChatMessage, FileMetadata, InterviewResponse};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 
@@ -10,12 +11,6 @@ pub enum AiError {
     InvalidResponse(String),
     #[error("API error: {0}")]
     ApiError(String),
-}
-
-#[derive(Debug, Serialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,11 +97,13 @@ pub async fn fetch_models(
     Ok(model_ids)
 }
 
-pub async fn generate_command(
+pub async fn chat_completion(
     provider: &AiProviderConfig,
-    guidelines: &str,
-    metadata: &FileMetadata,
-) -> Result<AiResponse, AiError> {
+    messages: Vec<ChatMessage>,
+    temperature: f64,
+    max_tokens: i32,
+    json_object: bool,
+) -> Result<String, AiError> {
     let client = reqwest::Client::new();
 
     let mut headers = HeaderMap::new();
@@ -120,26 +117,18 @@ pub async fn generate_command(
         );
     }
 
-    let system_prompt = build_system_prompt(guidelines);
-    let user_prompt = build_user_prompt(metadata);
-
     let request_body = ChatRequest {
         model: provider.model.clone(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system_prompt,
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: user_prompt,
-            },
-        ],
-        temperature: 0.3,
-        max_tokens: 4096,
-        response_format: Some(ResponseFormat {
-            format_type: "json_object".to_string(),
-        }),
+        messages,
+        temperature,
+        max_tokens,
+        response_format: if json_object {
+            Some(ResponseFormat {
+                format_type: "json_object".to_string(),
+            })
+        } else {
+            None
+        },
     };
 
     let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
@@ -158,11 +147,31 @@ pub async fn generate_command(
 
     let chat_response: ChatResponse = response.json().await?;
 
-    let content = chat_response
+    chat_response
         .choices
         .first()
         .map(|c| c.message.content.clone())
-        .ok_or_else(|| AiError::InvalidResponse("No choices in response".to_string()))?;
+        .ok_or_else(|| AiError::InvalidResponse("No choices in response".to_string()))
+}
+
+pub async fn generate_command(
+    provider: &AiProviderConfig,
+    guidelines: &str,
+    metadata: &FileMetadata,
+) -> Result<AiResponse, AiError> {
+    let system_prompt = build_system_prompt(guidelines);
+    let user_prompt = build_user_prompt(metadata);
+
+    let content = chat_completion(
+        provider,
+        vec![
+            ChatMessage { role: "system".to_string(), content: system_prompt },
+            ChatMessage { role: "user".to_string(), content: user_prompt },
+        ],
+        0.3,
+        4096,
+        true,
+    ).await?;
 
     // Try to parse as JSON
     let ai_response: AiResponse = match serde_json::from_str(&content) {
@@ -178,6 +187,28 @@ pub async fn generate_command(
     };
 
     Ok(ai_response)
+}
+
+pub async fn interview_turn(
+    provider: &AiProviderConfig,
+    mut messages: Vec<ChatMessage>,
+) -> Result<InterviewResponse, AiError> {
+    if messages.is_empty() {
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: interview_begin_user(host_os_label()),
+        });
+    }
+
+    let mut with_system = Vec::with_capacity(messages.len() + 1);
+    with_system.push(ChatMessage {
+        role: "system".to_string(),
+        content: interview_system_prompt().to_string(),
+    });
+    with_system.extend(messages);
+
+    let content = chat_completion(provider, with_system, 0.4, 16384, false).await?;
+    Ok(parse_interview_reply(&content))
 }
 
 pub fn build_system_prompt(guidelines: &str) -> String {

@@ -78,6 +78,15 @@ export interface AIProviderConfig {
   model: string;
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export type InterviewResponse =
+  | { type: "message"; content: string }
+  | { type: "complete"; guidelines_markdown: string };
+
 export interface AppSettings {
   providers: AIProviderConfig[];
   active_provider_index: number;

@@ -1,12 +1,38 @@
+import { createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import {
   workQueue,
   updateQueue,
   setConfirmDialogOpen,
   setConfirmDialogConfig,
+  settings,
+  addLog,
 } from "../stores/appStore";
+import GuidelinesInterviewModal from "../components/GuidelinesInterviewModal";
 
 export default function GuidelinesPage() {
+  const [interviewOpen, setInterviewOpen] = createSignal(false);
+
+  const handleGenerateWithAiInterview = () => {
+    const s = settings();
+    const provider = s.providers[s.active_provider_index];
+    const hasProvider =
+      !!provider &&
+      provider.base_url.trim() !== "" &&
+      provider.api_key.trim() !== "" &&
+      provider.model.trim() !== "";
+    if (!hasProvider) {
+      addLog({
+        timestamp: new Date().toISOString(),
+        level: "error",
+        message:
+          "Guidelines interview requires an AI provider. Configure one in Settings.",
+      });
+      return;
+    }
+    setInterviewOpen(true);
+  };
+
   const handleResetToDefault = () => {
     setConfirmDialogConfig({
       title: "Reset Guidelines?",
@@ -40,12 +66,20 @@ export default function GuidelinesPage() {
             commands
           </p>
         </div>
-        <button
-          onClick={handleResetToDefault}
-          class="text-sm font-medium text-text-muted hover:text-danger transition-colors"
-        >
-          Reset to Default
-        </button>
+        <div class="flex items-center gap-3">
+          <button
+            onClick={handleGenerateWithAiInterview}
+            class="px-4 py-1.5 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors"
+          >
+            Generate with AI Interview
+          </button>
+          <button
+            onClick={handleResetToDefault}
+            class="text-sm font-medium text-text-muted hover:text-danger transition-colors"
+          >
+            Reset to Default
+          </button>
+        </div>
       </div>
 
       <div class="flex-1 flex overflow-hidden">
@@ -109,6 +143,10 @@ export default function GuidelinesPage() {
           </div>
         </div>
       </div>
+      <GuidelinesInterviewModal
+        open={interviewOpen()}
+        onClose={() => setInterviewOpen(false)}
+      />
     </div>
   );
 }

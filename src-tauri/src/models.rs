@@ -158,6 +158,19 @@ pub struct AiProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InterviewResponse {
+    Message { content: String },
+    Complete { guidelines_markdown: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkQueue {
     pub output_folder: String,
     pub guidelines: String,

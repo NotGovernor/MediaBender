@@ -72,4 +72,18 @@ describe("Modal", () => {
     expect(header).toBeTruthy();
     expect(header!.querySelector("p")).toBeFalsy();
   });
+
+  it("replaces default body classes when bodyClass is provided", () => {
+    render(() => (
+      <Modal open={true} onClose={() => {}} title="Test Modal" bodyClass="p-0">
+        <p>Modal content</p>
+      </Modal>
+    ));
+
+    const content = screen.getByText("Modal content");
+    const body = content.parentElement;
+    expect(body).toBeTruthy();
+    expect(body!.className.split(/\s+/)).toContain("p-0");
+    expect(body!.className.split(/\s+/)).not.toContain("p-6");
+  });
 });

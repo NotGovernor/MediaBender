@@ -12,6 +12,7 @@ mod queue_ops;
 mod processing;
 mod app_startup;
 mod fs_ops;
+mod interview_ops;
 
 use models::*;
 use app_startup::{AppState, build_app_state};
@@ -29,6 +30,21 @@ fn persist_queue(store: &JsonFileStore, queue: &mut WorkQueue) -> Result<WorkQue
     queue.last_modified = chrono::Utc::now().to_rfc3339();
     store.save_queue(queue)?;
     Ok(queue.clone())
+}
+
+fn active_provider_or_err(settings: &AppSettings) -> Result<AiProviderConfig, String> {
+    let provider = settings
+        .providers
+        .get(settings.active_provider_index)
+        .cloned()
+        .ok_or_else(|| "No active provider configured".to_string())?;
+    if provider.base_url.trim().is_empty()
+        || provider.api_key.trim().is_empty()
+        || provider.model.trim().is_empty()
+    {
+        return Err("No active provider configured".into());
+    }
+    Ok(provider)
 }
 
 #[tauri::command]
@@ -286,6 +302,21 @@ async fn apply_command_template(
     Ok(defaults::default_guidelines())
 }
 
+#[tauri::command]
+async fn interview_guidelines(
+    messages: Vec<ChatMessage>,
+    state: tauri::State<'_, AppState>,
+) -> Result<InterviewResponse, String> {
+    let provider = {
+        let settings = state.settings.lock().await;
+        active_provider_or_err(&settings)?
+    }; // mutex released before HTTP
+
+    ai::interview_turn(&provider, messages)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = build_app_state();
@@ -298,7 +329,7 @@ pub fn run() {
             add_files, add_folder, remove_file, clear_queue, approve_file, unapprove_file,
             skip_file, reset_file, scan_and_analyze, generate_commands, apply_command_template,
             fetch_models, verify_ffmpeg_paths, start_processing, stop_processing, delete_output_file,
-            save_queue, load_queue, load_settings, save_settings, load_guidelines, save_guidelines, get_default_guidelines,
+            save_queue, load_queue, load_settings, save_settings, load_guidelines, save_guidelines, get_default_guidelines, interview_guidelines,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
