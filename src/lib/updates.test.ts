@@ -3,6 +3,7 @@ import {
   isQueueBlockingUpdate,
   shouldCheckOnLaunch,
   formatAvailableNote,
+  runUpdateCheck,
 } from "./updates";
 
 describe("isQueueBlockingUpdate", () => {
@@ -37,5 +38,39 @@ describe("formatAvailableNote", () => {
   });
   it("does not double v", () => {
     expect(formatAvailableNote("v0.4.0")).toBe("v0.4.0 available");
+  });
+});
+
+describe("runUpdateCheck", () => {
+  it("returns null when isDev without calling check", async () => {
+    let called = 0;
+    const result = await runUpdateCheck({
+      isDev: true,
+      check: async () => {
+        called += 1;
+        return { version: "1.0.0", notes: "x" };
+      },
+    });
+    expect(result).toBeNull();
+    expect(called).toBe(0);
+  });
+
+  it("returns check result when not dev", async () => {
+    const info = { version: "0.4.0", notes: "fixes" };
+    const result = await runUpdateCheck({
+      isDev: false,
+      check: async () => info,
+    });
+    expect(result).toEqual(info);
+  });
+
+  it("swallows thrown errors as null", async () => {
+    const result = await runUpdateCheck({
+      isDev: false,
+      check: async () => {
+        throw new Error("network");
+      },
+    });
+    expect(result).toBeNull();
   });
 });

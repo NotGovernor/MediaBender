@@ -2,6 +2,9 @@ import { Match, Switch, Show, createEffect, onMount, createSignal, onCleanup } f
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import Sidebar from "./components/Sidebar";
 import ConfirmDialog from "./components/ConfirmDialog";
 import UpdateDialog from "./components/UpdateDialog";
@@ -24,14 +27,175 @@ import {
   isScanning,
   appVersion,
   setAppVersion,
+  availableUpdateVersion,
+  setAvailableUpdateVersion,
+  setUpdateTargetVersion,
+  setUpdateNotes,
+  setUpdateDialogPhase,
+  setUpdateProgress,
+  setUpdateError,
+  updateDialogPhase,
 } from "./stores/appStore";
 import { scanQueue } from "./lib/autoScanner";
 import { checkAndRunDeferredScan } from "./lib/deferredScan";
+import { isQueueBlockingUpdate, shouldCheckOnLaunch } from "./lib/updates";
+import { getLastUpdate, setLastUpdate } from "./lib/updateSession";
 import type { AppSettings, WorkQueue } from "./types";
 
 // Debounce helpers for auto-save
 let settingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let guidelinesSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function formatByteCount(n: number): string {
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+async function performCheck(opts: { silent: boolean }) {
+  if (import.meta.env.DEV) {
+    if (!opts.silent) {
+      addLog({
+        timestamp: new Date().toISOString(),
+        level: "debug",
+        message: "Skipping update check in dev",
+      });
+    }
+    return;
+  }
+
+  try {
+    const result = await check();
+    setLastUpdate(result);
+    if (!result) {
+      setAvailableUpdateVersion(null);
+      if (!opts.silent) {
+        addLog({
+          timestamp: new Date().toISOString(),
+          level: "info",
+          message: `You're on the latest version (v${appVersion()}).`,
+        });
+      }
+      return;
+    }
+
+    setAvailableUpdateVersion(result.version);
+    setUpdateTargetVersion(result.version);
+    setUpdateNotes(result.body ?? "");
+    if (!opts.silent) {
+      setUpdateDialogPhase("confirm");
+    }
+  } catch (err) {
+    setLastUpdate(null);
+    if (opts.silent) {
+      addLog({
+        timestamp: new Date().toISOString(),
+        level: "debug",
+        message: `Update check failed: ${err}`,
+      });
+      return;
+    }
+    addLog({
+      timestamp: new Date().toISOString(),
+      level: "error",
+      message: `Update check failed: ${err}`,
+    });
+    if (updateDialogPhase() !== "idle") {
+      setUpdateError(String(err));
+      setUpdateDialogPhase("error");
+    }
+  }
+}
+
+async function handleVersionClick() {
+  if (isQueueBlockingUpdate(workQueue().files) && availableUpdateVersion()) {
+    addLog({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      message: "Finish or stop the queue before updating.",
+    });
+    return;
+  }
+  if (availableUpdateVersion()) {
+    setUpdateDialogPhase("confirm");
+    return;
+  }
+  await performCheck({ silent: false });
+}
+
+async function handleInstall() {
+  if (isQueueBlockingUpdate(workQueue().files)) {
+    addLog({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      message: "Finish or stop the queue before updating.",
+    });
+    setUpdateDialogPhase("idle");
+    return;
+  }
+
+  setUpdateDialogPhase("downloading");
+  setUpdateProgress("Starting download…");
+
+  try {
+    let update = getLastUpdate();
+    if (!update) {
+      update = await check();
+      setLastUpdate(update);
+    }
+    if (!update) {
+      const message = "No update available to install.";
+      setUpdateError(message);
+      setUpdateDialogPhase("error");
+      addLog({
+        timestamp: new Date().toISOString(),
+        level: "error",
+        message,
+      });
+      return;
+    }
+
+    let downloaded = 0;
+    let contentLength: number | undefined;
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        downloaded = 0;
+        contentLength = event.data.contentLength;
+        setUpdateProgress("Downloading…");
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+        if (contentLength != null) {
+          setUpdateProgress(
+            `Downloading ${formatByteCount(downloaded)} / ${formatByteCount(contentLength)}`,
+          );
+        }
+      } else if (event.event === "Finished") {
+        setUpdateProgress("Installing…");
+      }
+    });
+    await relaunch();
+  } catch (err) {
+    setUpdateError(String(err));
+    setUpdateDialogPhase("error");
+    addLog({
+      timestamp: new Date().toISOString(),
+      level: "error",
+      message: `Update install failed: ${err}`,
+    });
+  }
+}
+
+async function handleOpenDownload() {
+  try {
+    await openUrl("https://github.com/NotGovernor/MediaBender/releases");
+  } catch (err) {
+    addLog({
+      timestamp: new Date().toISOString(),
+      level: "error",
+      message: `Failed to open download page: ${err}`,
+    });
+  }
+}
 
 export default function App() {
   const [loaded, setLoaded] = createSignal(false);
@@ -151,6 +315,15 @@ export default function App() {
     }
 
     setLoaded(true);
+
+    if (
+      shouldCheckOnLaunch({
+        isDev: import.meta.env.DEV,
+        checkOnStartup: settings().check_updates_on_startup,
+      })
+    ) {
+      await performCheck({ silent: true });
+    }
   });
 
   onCleanup(() => {
@@ -227,7 +400,7 @@ export default function App() {
 
   return (
     <div class="h-full flex bg-bg-primary text-text-primary">
-      <Sidebar onVersionClick={() => {}} />
+      <Sidebar onVersionClick={handleVersionClick} />
 
       <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Show when={ffmpegMissing() || ffprobeMissing()}>
@@ -273,8 +446,8 @@ export default function App() {
         <ConfirmDialog />
         <UpdateDialog
           currentVersion={appVersion()}
-          onInstall={() => {}}
-          onOpenDownload={() => {}}
+          onInstall={handleInstall}
+          onOpenDownload={handleOpenDownload}
         />
       </div>
     </div>
