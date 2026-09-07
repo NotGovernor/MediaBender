@@ -1,7 +1,6 @@
 use crate::models::{AudioStream, FileMetadata, SubtitleStream, VideoMetadata};
 use serde_json::Value;
 use std::process::Stdio;
-use tokio::process::Command;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FfprobeError {
@@ -14,7 +13,7 @@ pub enum FfprobeError {
 }
 
 pub async fn analyze_file(path: &str, ffprobe_path: &str) -> Result<(FileMetadata, String), FfprobeError> {
-    let output = Command::new(ffprobe_path)
+    let output = crate::process_cmd::media_command(ffprobe_path)
         .args([
             "-v", "error",
             "-print_format", "json",

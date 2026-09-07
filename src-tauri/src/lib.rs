@@ -12,6 +12,7 @@ mod queue_ops;
 mod processing;
 mod app_startup;
 mod fs_ops;
+mod process_cmd;
 mod interview_ops;
 
 use models::*;
@@ -221,6 +222,7 @@ async fn apply_command_template(
 
 #[tauri::command] async fn start_processing(file_ids: Vec<String>, ffmpeg_path: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
     let max_parallel = { let s = state.settings.lock().await; s.max_parallel.max(1) as usize };
+    state.tracker.arm();
     // Replace the cancellation token so any previous stop signal is cleared.
     let new_token = tokio_util::sync::CancellationToken::new();
     let token_to_pass = new_token.clone();

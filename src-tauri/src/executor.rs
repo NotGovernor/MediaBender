@@ -1,6 +1,7 @@
 use crate::models::VideoFile;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -24,20 +25,34 @@ pub enum ExecutorEvent {
 }
 
 /// Tracks running FFmpeg child processes so they can be cancelled.
-#[derive(Default)]
 pub struct ProcessTracker {
     children: RwLock<Vec<tokio::process::Child>>,
+    accepting: AtomicBool,
 }
 
 impl ProcessTracker {
     pub fn new() -> Self {
         Self {
             children: RwLock::new(Vec::new()),
+            accepting: AtomicBool::new(true),
         }
     }
 
-    pub async fn add(&self, child: tokio::process::Child) {
-        self.children.write().await.push(child);
+    pub fn arm(&self) {
+        self.accepting.store(true, Ordering::SeqCst);
+    }
+
+    pub async fn add(&self, mut child: tokio::process::Child) -> Result<(), std::io::Error> {
+        let mut children = self.children.write().await;
+        if !self.accepting.load(Ordering::SeqCst) {
+            terminate_child(&mut child).await;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Process tracker is not accepting children",
+            ));
+        }
+        children.push(child);
+        Ok(())
     }
 
     /// Wait for a specific child and remove it from the tracker.
@@ -73,6 +88,9 @@ impl ProcessTracker {
     }
 
     pub async fn kill_all(&self) {
+        // Disarm before the write lock so a concurrent add cannot push after
+        // we clear. add() re-checks accepting only after it holds this lock.
+        self.accepting.store(false, Ordering::SeqCst);
         // Keep each Child in the tracker until kill+wait finishes. Replacing the
         // vec first let wait_and_remove return NotFound while ffmpeg still held
         // the output file; execute then deleted (Windows sharing violation).
@@ -80,11 +98,26 @@ impl ProcessTracker {
         // execute cannot emit "Processing was stopped" until the process is gone.
         let mut children = self.children.write().await;
         for child in children.iter_mut() {
-            // tokio Child::kill already waits for exit — never drop a live Child.
-            let _ = child.kill().await;
+            terminate_child(child).await;
         }
         children.clear();
     }
+}
+
+/// Kill the child and any descendants. `Child::kill` is TerminateProcess on
+/// Windows and does not walk the tree — a wrapper/stub dying leaves ffmpeg
+/// encoding in the background while the UI thinks Stop finished.
+async fn terminate_child(child: &mut tokio::process::Child) {
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let mut cmd = crate::process_cmd::media_command("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = cmd.status().await;
+    }
+    // Always wait after kill so we never drop a live Child.
+    let _ = child.kill().await;
 }
 
 pub struct FFmpegExecutor {
@@ -122,7 +155,7 @@ impl FFmpegExecutor {
             &file.output_path,
         );
 
-        let mut cmd = Command::new(ffmpeg_path);
+        let mut cmd = crate::process_cmd::media_command(ffmpeg_path);
         for arg in &args {
             cmd.arg(arg);
         }
@@ -149,20 +182,35 @@ impl FFmpegExecutor {
             }
         };
         let child_id = child.id();
-
-        // Emit Started event immediately after successful spawn
-        let _ = tx
-            .send(ExecutorEvent::Started {
-                file_id: file.id.clone(),
-            })
-            .await;
-
-        // Take stdout/stderr before moving child into tracker
+        // Take pipes before any await so they cannot be dropped with the Child
+        // if add() rejects (add kills the child on reject).
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        // Register child for potential cancellation
-        self.tracker.add(child).await;
+        match self.tracker.add(child).await {
+            Err(_) => {
+                let duration = start_time.elapsed().as_secs_f64();
+                let completed_at = chrono::Utc::now().to_rfc3339();
+                let _ = tx
+                    .send(ExecutorEvent::Completed {
+                        file_id: file.id.clone(),
+                        success: false,
+                        message: "Processing was stopped".to_string(),
+                        output_size: 0,
+                        processing_duration: duration,
+                        completed_at,
+                    })
+                    .await;
+                return Err("Processing was stopped".to_string());
+            }
+            Ok(()) => {
+                let _ = tx
+                    .send(ExecutorEvent::Started {
+                        file_id: file.id.clone(),
+                    })
+                    .await;
+            }
+        }
 
         let file_id = file.id.clone();
         let tx_clone = tx.clone();
@@ -369,7 +417,7 @@ mod tests {
             .stdin(Stdio::null());
         let child = cmd.spawn().expect("spawn long-running child");
         let child_id = child.id();
-        tracker.add(child).await;
+        tracker.add(child).await.expect("add child");
 
         let tracker_wait = tracker.clone();
         let wait_handle = tokio::spawn(async move { tracker_wait.wait_and_remove(child_id).await });
@@ -392,6 +440,99 @@ mod tests {
         assert!(
             wait_result.is_err(),
             "child should be gone from tracker after kill_all"
+        );
+    }
+
+    fn process_exists(pid: u32) -> bool {
+        if cfg!(windows) {
+            let output = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+                .output()
+                .expect("tasklist");
+            String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+        } else {
+            std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    }
+
+    /// Parent python that spawns a child sleeper and writes the child's pid to `pid_path`.
+    fn spawn_python_tree(pid_path: &std::path::Path) -> Command {
+        let script = format!(
+            "import subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(600)']); open(r'{}','w').write(str(p.pid)); p.wait()",
+            pid_path.display().to_string().replace('\\', "\\\\")
+        );
+        let mut cmd = Command::new("python");
+        cmd.args(["-c", &script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null());
+        cmd
+    }
+
+    #[tokio::test]
+    async fn kill_all_terminates_the_os_process_and_its_children() {
+        let pid_path = std::env::temp_dir().join(format!(
+            "mb_kill_tree_{}_{}.pid",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&pid_path);
+
+        let tracker = Arc::new(ProcessTracker::new());
+        let child = spawn_python_tree(&pid_path)
+            .spawn()
+            .expect("spawn python tree");
+        let parent_pid = child.id().expect("parent pid");
+        tracker.add(child).await.expect("add child");
+
+        let grandchild_pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(s) = std::fs::read_to_string(&pid_path) {
+                    if let Ok(pid) = s.trim().parse::<u32>() {
+                        return pid;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("grandchild pid file");
+
+        assert!(process_exists(parent_pid), "parent should be running before kill");
+        assert!(
+            process_exists(grandchild_pid),
+            "grandchild should be running before kill"
+        );
+
+        tracker.kill_all().await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let parent_alive = process_exists(parent_pid);
+        let grandchild_alive = process_exists(grandchild_pid);
+        // Do not leak 600s sleepers if kill_all is still broken.
+        if parent_alive || grandchild_alive {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &parent_pid.to_string()])
+                .output();
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &grandchild_pid.to_string()])
+                .output();
+        }
+        let _ = std::fs::remove_file(&pid_path);
+        assert!(
+            !parent_alive,
+            "kill_all must terminate the tracked process, not only drop it from the tracker"
+        );
+        assert!(
+            !grandchild_alive,
+            "kill_all must terminate descendant processes (ffmpeg trees), not only the wrapper"
         );
     }
 
@@ -447,6 +588,57 @@ mod tests {
             }
             other => panic!("Expected Completed event, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn execute_after_kill_all_reports_stopped_without_started() {
+        let tracker = Arc::new(ProcessTracker::new());
+        tracker.kill_all().await;
+        let executor = FFmpegExecutor::new(tracker);
+        let (tx, mut rx) = mpsc::channel::<ExecutorEvent>(10);
+
+        let file = VideoFile {
+            id: "test-id".to_string(),
+            input_path: "/tmp/input.mkv".to_string(),
+            output_path: "/tmp/output.mkv".to_string(),
+            scan_root: "/tmp".to_string(),
+            ffprobe_raw: "".to_string(),
+            metadata: None,
+            generated_command: "".to_string(),
+            command_args: "-c:v copy".to_string(),
+            description: "".to_string(),
+            reasoning: "".to_string(),
+            status: FileStatus::Pending,
+            is_approved: false,
+            error_message: "".to_string(),
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
+            input_size: 0,
+            output_size: 0,
+            processing_duration: 0.0,
+            completed_at: "".to_string(),
+        };
+
+        let result = executor.execute(&file, "true", tx).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Processing was stopped");
+
+        let first_event = rx.recv().await.expect("Should receive a Completed event");
+        match first_event {
+            ExecutorEvent::Completed {
+                file_id,
+                success,
+                message,
+                ..
+            } => {
+                assert_eq!(file_id, "test-id");
+                assert!(!success);
+                assert_eq!(message, "Processing was stopped");
+            }
+            other => panic!("Expected Completed event, got {:?}", other),
+        }
+
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -655,5 +847,59 @@ mod tests {
             }
             other => panic!("Expected Completed event, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn add_after_kill_all_kills_the_child() {
+        let tracker = Arc::new(ProcessTracker::new());
+        tracker.kill_all().await;
+
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("python");
+            c.args(["-c", "import time; time.sleep(600)"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("600");
+            c
+        };
+        cmd.stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null());
+        let child = cmd.spawn().expect("spawn long-running child");
+        let added = tracker.add(child).await;
+        // On RED, add succeeded so child is in tracker — clean up:
+        if added.is_ok() {
+            tracker.kill_all().await;
+        }
+        assert!(
+            added.is_err(),
+            "add after kill_all must reject and kill the child"
+        );
+    }
+
+    #[tokio::test]
+    async fn arm_allows_add_after_kill_all() {
+        let tracker = Arc::new(ProcessTracker::new());
+        tracker.kill_all().await;
+        tracker.arm();
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("python");
+            c.args(["-c", "import time; time.sleep(600)"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("600");
+            c
+        };
+        cmd.stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null());
+        let child = cmd.spawn().expect("spawn long-running child");
+        tracker
+            .add(child)
+            .await
+            .expect("add must succeed after arm");
+        tracker.kill_all().await;
     }
 }
