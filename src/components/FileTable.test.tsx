@@ -10,6 +10,8 @@ import {
   reviewModalOpen,
   detailModalOpen,
   workQueue,
+  addGeneratingIds,
+  clearGeneratingIds,
 } from "../stores/appStore";
 import type { VideoFile } from "../types";
 
@@ -73,6 +75,7 @@ describe("FileTable", () => {
     setDetailModalOpen(false);
     setSelectedFileId(null);
     setFileDropHovering(false);
+    clearGeneratingIds();
   });
 
   it("empty_state_mentions_drop_files_or_folders", () => {
@@ -222,5 +225,22 @@ describe("FileTable", () => {
     expect(doneRow.className).toContain("border-l-transparent");
     expect(pendingRow.className).not.toContain("border-l-gold");
     expect(doneRow.className).not.toContain("border-l-gold");
+  });
+
+  it("shows_Generating_badge_from_overlay_while_file_status_stays_Pending", () => {
+    const pending = createMockFile({
+      id: "a",
+      input_path: "/media/movies/PendingMovie.mkv",
+      status: "Pending",
+      is_approved: false,
+    });
+    setWorkQueue((q) => ({ ...q, files: [pending] }));
+    addGeneratingIds(["a"]);
+
+    render(() => <FileTable />);
+
+    expect(screen.getByText("Generating")).toBeTruthy();
+    expect(screen.queryByText("Pending")).toBeFalsy();
+    expect(workQueue().files[0].status).toBe("Pending");
   });
 });

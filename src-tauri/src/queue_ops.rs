@@ -226,6 +226,12 @@ pub async fn generate_commands(
     Ok(results)
 }
 
+pub fn merge_generated_file(queue: &mut WorkQueue, updated: &VideoFile) {
+    if let Some(slot) = queue.files.iter_mut().find(|f| f.id == updated.id) {
+        *slot = updated.clone();
+    }
+}
+
 fn find_file_mut<'a>(queue: &'a mut WorkQueue, id: &str) -> Result<&'a mut VideoFile, String> {
     queue
         .files
@@ -1159,5 +1165,33 @@ mod tests {
         assert_eq!(queue.files.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_generated_file_replaces_matching_id_only() {
+        let a = create_test_video_file("a", None);
+        let b = create_test_video_file("b", None);
+        let mut queue = test_queue(vec![a, b]);
+        let mut updated = create_test_video_file("a", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+            f.description = "copy".to_string();
+        }));
+        updated.command_args = "-c:v copy".to_string();
+        updated.description = "copy".to_string();
+
+        merge_generated_file(&mut queue, &updated);
+
+        assert_eq!(queue.files[0].command_args, "-c:v copy");
+        assert_eq!(queue.files[0].description, "copy");
+        assert!(queue.files[1].command_args.is_empty());
+    }
+
+    #[test]
+    fn merge_generated_file_ignores_unknown_id() {
+        let mut queue = test_queue(vec![create_test_video_file("a", None)]);
+        let other = create_test_video_file("nope", None);
+        merge_generated_file(&mut queue, &other);
+        assert_eq!(queue.files.len(), 1);
+        assert_eq!(queue.files[0].id, "a");
     }
 }

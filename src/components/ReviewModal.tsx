@@ -13,6 +13,8 @@ import {
   setWorkQueue,
   pendingReviewRegenerateFeedback,
   setPendingReviewRegenerateFeedback,
+  addGeneratingIds,
+  removeGeneratingId,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
 
@@ -105,18 +107,20 @@ export default function ReviewModal() {
 
   const regenerateWithFeedback = async (fb: string) => {
     if (!file()) return;
+    const id = file()!.id;
 
     setIsRegenerating(true);
     addLog({
       timestamp: new Date().toISOString(),
       level: "info",
       message: `Regenerating command with feedback for: ${file()!.input_path.split(/[/\\]/).pop()}`,
-      file_id: file()!.id,
+      file_id: id,
     });
 
+    addGeneratingIds([id]);
     try {
       const q = await invoke<WorkQueue>("generate_commands", {
-        fileIds: [file()!.id],
+        fileIds: [id],
         feedback: fb,
       });
       setWorkQueue(q);
@@ -125,7 +129,7 @@ export default function ReviewModal() {
         timestamp: new Date().toISOString(),
         level: "info",
         message: `Regeneration complete for: ${file()!.input_path.split(/[/\\]/).pop()}`,
-        file_id: file()!.id,
+        file_id: id,
       });
 
       // Clear feedback on successful regeneration
@@ -137,10 +141,11 @@ export default function ReviewModal() {
         timestamp: new Date().toISOString(),
         level: "error",
         message: `Regeneration failed: ${err}`,
-        file_id: file()!.id,
+        file_id: id,
       });
     } finally {
       setIsRegenerating(false);
+      removeGeneratingId(id);
     }
   };
 

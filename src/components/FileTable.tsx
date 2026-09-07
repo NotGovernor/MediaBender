@@ -10,6 +10,7 @@ import {
   closeModals,
   addLog,
   isFileDropHovering,
+  generatingIds,
 } from "../stores/appStore";
 import type { VideoFile, FileStatus, WorkQueue } from "../types";
 import { isStartEligible } from "../lib/queueReadiness";
@@ -137,7 +138,10 @@ export default function FileTable() {
                     {formatDuration(file.metadata?.duration ?? 0)}
                   </td>
                   <td class="px-3 py-2">
-                    <StatusBadge status={file.status} isApproved={file.is_approved} />
+                    <StatusBadge
+                      status={generatingIds().includes(file.id) ? "Generating" : file.status}
+                      isApproved={file.is_approved}
+                    />
                   </td>
                   <td class="px-3 py-2 text-text-secondary">
                     <div class="truncate max-w-[240px]" title={file.description}>

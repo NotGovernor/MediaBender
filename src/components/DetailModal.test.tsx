@@ -16,6 +16,8 @@ import {
   confirmDialogOpen,
   confirmDialogConfig,
   pendingReviewRegenerateFeedback,
+  generatingIds,
+  clearGeneratingIds,
 } from "../stores/appStore";
 import type { VideoFile } from "../types";
 
@@ -81,6 +83,7 @@ describe("DetailModal", () => {
     setConfirmDialogOpen(false);
     setSelectedFileId(null);
     setPendingReviewRegenerateFeedback(null);
+    clearGeneratingIds();
   });
 
   it("shows just the filename in the title without 'File Details' fallback", () => {
@@ -529,6 +532,44 @@ describe("DetailModal", () => {
     expect(updated.status).toBe("Pending");
     expect(reviewModalOpen()).toBe(true);
     expect(detailModalOpen()).toBe(false);
+  });
+
+  it("regenerate_adds_overlay_id_without_setting_file_status_Generating", async () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveInvoke: (value: any) => void;
+    const deferred = new Promise<any>((resolve) => {
+      resolveInvoke = resolve;
+    });
+    vi.mocked(invoke).mockReturnValueOnce(deferred);
+
+    render(() => (
+      <>
+        <DetailModal />
+        <ReviewModal />
+      </>
+    ));
+
+    const textarea = screen.getByPlaceholderText(
+      "e.g. Use 128k bitrate instead, or add -map_chapters 0..."
+    ) as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: "Use HEVC instead" } });
+    fireEvent.click(screen.getByText("Regenerate Command"));
+
+    expect(workQueue().files.find((f) => f.id === mockFile.id)!.status).not.toBe("Generating");
+    expect(generatingIds()).toContain(mockFile.id);
+
+    resolveInvoke!({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [mockFile],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
   });
 
   it("pending_approved_shows_single_Approved_badge_without_chip", () => {

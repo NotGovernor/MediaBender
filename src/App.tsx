@@ -48,7 +48,8 @@ import {
   applyFileDrop,
 } from "./lib/fileDrop";
 import { scanPendingAfterAdd } from "./lib/scanPendingAfterAdd";
-import type { AddPathsResult, AppSettings, WorkQueue } from "./types";
+import { applyGenerateEvent } from "./lib/applyGenerateEvent";
+import type { AddPathsResult, AppSettings, VideoFile, WorkQueue } from "./types";
 
 // Debounce helpers for auto-save
 let settingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -149,6 +150,7 @@ export default function App() {
 
   // ── Executor event listener ──
   let unlistenExecutor: (() => void) | null = null;
+  let unlistenGenerate: (() => void) | null = null;
   let unlistenDrag: (() => void) | undefined;
   const preventNav = (e: DragEvent) => {
     e.preventDefault();
@@ -225,6 +227,10 @@ export default function App() {
           });
         }
       }
+    });
+
+    unlistenGenerate = await listen<VideoFile>("generate-event", (event) => {
+      applyGenerateEvent(event.payload);
     });
 
     try {
@@ -318,6 +324,7 @@ export default function App() {
     window.removeEventListener("drop", preventNav);
     unlistenDrag?.();
     if (unlistenExecutor) unlistenExecutor();
+    unlistenGenerate?.();
   });
 
   // Keep FFmpeg missing signals in sync with settings

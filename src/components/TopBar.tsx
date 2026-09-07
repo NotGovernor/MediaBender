@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   isProcessing,
   isGenerating,
-  setIsGenerating,
+  addGeneratingIds,
+  clearGeneratingIds,
   workQueue,
   setWorkQueue,
   settings,
@@ -85,7 +86,7 @@ export default function TopBar() {
       return;
     }
 
-    setIsGenerating(true);
+    addGeneratingIds(analyzedWithoutCommand);
     addLog({
       timestamp: new Date().toISOString(),
       level: "info",
@@ -118,7 +119,7 @@ export default function TopBar() {
         message: `Generate Commands failed: ${err}`,
       });
     } finally {
-      setIsGenerating(false);
+      clearGeneratingIds();
     }
   };
 
@@ -223,7 +224,7 @@ export default function TopBar() {
         fallback={
           <button
             onClick={handleStart}
-            disabled={startEligibleCount() === 0}
+            disabled={startEligibleCount() === 0 || isGenerating()}
             class="px-4 py-1.5 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {startEligibleCount() > 0

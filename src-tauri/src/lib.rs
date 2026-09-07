@@ -22,10 +22,11 @@ use settings_ops::verify_ffmpeg_paths as verify_ffmpeg_paths_impl;
 use queue_ops::{
     add_files as add_files_impl, add_folder as add_folder_impl, add_paths as add_paths_impl,
     apply_command_template as apply_command_template_impl, approve_file as approve_file_impl,
-    clear_files as clear_files_impl, generate_commands_snapshots, remove_file as remove_file_impl,
-    reset_file as reset_file_impl, scan_and_analyze_snapshots, skip_file as skip_file_impl,
-    unapprove_file as unapprove_file_impl,
+    clear_files as clear_files_impl, generate_commands_snapshots, merge_generated_file,
+    remove_file as remove_file_impl, reset_file as reset_file_impl, scan_and_analyze_snapshots,
+    skip_file as skip_file_impl, unapprove_file as unapprove_file_impl,
 };
+use tauri::Emitter;
 
 fn persist_queue(store: &JsonFileStore, queue: &mut WorkQueue) -> Result<WorkQueue, String> {
     queue.last_modified = chrono::Utc::now().to_rfc3339();
@@ -159,6 +160,7 @@ async fn scan_and_analyze(
 async fn generate_commands(
     file_ids: Vec<String>,
     feedback: Option<String>,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkQueue, String> {
     let (provider, output_folder, naming_template, guidelines, snapshots) = {
@@ -182,23 +184,27 @@ async fn generate_commands(
         (provider, output_folder, naming_template, guidelines, snapshots)
     }; // mutexes released before HTTP
 
-    let results = generate_commands_snapshots(
-        snapshots,
-        feedback,
-        &provider,
-        &output_folder,
-        &naming_template,
-        &guidelines,
-    )
-    .await?;
-
-    let mut queue = state.queue.lock().await;
-    for updated in results {
-        if let Some(slot) = queue.files.iter_mut().find(|f| f.id == updated.id) {
-            *slot = updated;
+    for snapshot in snapshots {
+        let results = generate_commands_snapshots(
+            vec![snapshot],
+            feedback.clone(),
+            &provider,
+            &output_folder,
+            &naming_template,
+            &guidelines,
+        )
+        .await?;
+        for updated in results {
+            let mut queue = state.queue.lock().await;
+            merge_generated_file(&mut queue, &updated);
+            persist_queue(&state.store, &mut queue)?;
+            drop(queue);
+            let _ = app.emit("generate-event", updated);
         }
     }
-    persist_queue(&state.store, &mut queue)
+
+    let queue = state.queue.lock().await;
+    Ok(queue.clone())
 }
 
 #[tauri::command]

@@ -12,6 +12,7 @@ import {
   setConfirmDialogConfig,
   setPendingReviewRegenerateFeedback,
   setWorkQueue,
+  addGeneratingIds,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
 
@@ -79,6 +80,7 @@ export default function DetailModal() {
     const fileId = file()!.id;
     setPendingReviewRegenerateFeedback(fb);
     handoffToReview(fileId);
+    addGeneratingIds([fileId]);
   };
 
   const handleReprocess = () => {

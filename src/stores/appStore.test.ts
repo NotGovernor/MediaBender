@@ -16,6 +16,11 @@ import {
   handoffToReview,
   pendingReviewRegenerateFeedback,
   setPendingReviewRegenerateFeedback,
+  addGeneratingIds,
+  removeGeneratingId,
+  clearGeneratingIds,
+  generatingIds,
+  isGenerating,
 } from "./appStore";
 import { createMockFile } from "../test-helpers";
 
@@ -99,5 +104,46 @@ describe("appStore modal helpers", () => {
     setPendingReviewRegenerateFeedback("use hevc");
     handoffToReview("file-1");
     expect(pendingReviewRegenerateFeedback()).toBe("use hevc");
+  });
+});
+
+describe("generatingIds overlay", () => {
+  beforeEach(() => {
+    clearGeneratingIds();
+  });
+
+  it("addGeneratingIds_sets_isGenerating_without_touching_file_status", () => {
+    const fileA = createMockFile({ id: "a", status: "Pending" });
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+    addGeneratingIds(["a"]);
+    expect(generatingIds()).toEqual(["a"]);
+    expect(isGenerating()).toBe(true);
+    expect(workQueue().files[0].status).toBe("Pending");
+  });
+
+  it("addGeneratingIds_dedupes", () => {
+    addGeneratingIds(["a"]);
+    addGeneratingIds(["a", "b"]);
+    expect(generatingIds()).toEqual(["a", "b"]);
+  });
+
+  it("removeGeneratingId_clears_isGenerating_when_empty", () => {
+    addGeneratingIds(["a", "b"]);
+    removeGeneratingId("a");
+    expect(generatingIds()).toEqual(["b"]);
+    expect(isGenerating()).toBe(true);
+    removeGeneratingId("b");
+    expect(generatingIds()).toEqual([]);
+    expect(isGenerating()).toBe(false);
+  });
+
+  it("setWorkQueue_does_not_clear_generatingIds", () => {
+    addGeneratingIds(["a"]);
+    setWorkQueue((q) => ({
+      ...q,
+      files: [createMockFile({ id: "a", status: "Pending", is_approved: true })],
+    }));
+    expect(generatingIds()).toEqual(["a"]);
+    expect(isGenerating()).toBe(true);
   });
 });

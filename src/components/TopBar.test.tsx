@@ -6,7 +6,10 @@ import {
   setSettings,
   workQueue,
   isProcessing,
-  setIsGenerating,
+  clearGeneratingIds,
+  generatingIds,
+  isGenerating,
+  addGeneratingIds,
   logEntries,
   clearLogs,
 } from "../stores/appStore";
@@ -19,7 +22,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 describe("TopBar", () => {
   beforeEach(() => {
     clearLogs();
-    setIsGenerating(false);
+    clearGeneratingIds();
     setWorkQueue(createMockQueue());
 
     setSettings({
@@ -139,7 +142,11 @@ describe("TopBar", () => {
     fireEvent.click(generateButton);
 
     expect(workQueue().files.find((f) => f.id === "a")!.status).toBe("Pending");
+    expect(generatingIds()).toEqual(["a"]);
+    expect(isGenerating()).toBe(true);
     expect(generateButton.querySelector("svg")).toBeTruthy();
+    const startButton = screen.getByRole("button", { name: /Start Processing/ }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(true);
 
     resolveInvoke!(
       createMockQueue([
@@ -160,6 +167,20 @@ describe("TopBar", () => {
     await waitFor(() => {
       expect(workQueue().files.find((f) => f.id === "a")!.status).toBe("Pending");
     });
+    await waitFor(() => {
+      expect(generatingIds()).toEqual([]);
+    });
+  });
+
+  it("disables_Start_while_generatingIds_non_empty", () => {
+    const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+    addGeneratingIds(["z"]);
+
+    render(() => <TopBar />);
+
+    const startButton = screen.getByRole("button", { name: /Start Processing/ }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(true);
   });
 
   it("disables Approve All when no items have a generated command and are unapproved", () => {

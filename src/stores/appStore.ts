@@ -187,8 +187,28 @@ export const [currentProcessingId, setCurrentProcessingId] = createSignal<string
 // ── Scanning State ──
 export const [isScanning, setIsScanning] = createSignal(false);
 
-// ── Generating State ──
-export const [isGenerating, setIsGenerating] = createSignal(false);
+// ── Generating overlay (webview-only; never written to VideoFile.status) ──
+export const [generatingIds, setGeneratingIds] = createSignal<string[]>([]);
+export const isGenerating = createMemo(() => generatingIds().length > 0);
+
+export function addGeneratingIds(ids: string[]) {
+  if (ids.length === 0) return;
+  setGeneratingIds((prev) => {
+    const next = [...prev];
+    for (const id of ids) {
+      if (!next.includes(id)) next.push(id);
+    }
+    return next;
+  });
+}
+
+export function removeGeneratingId(id: string) {
+  setGeneratingIds((prev) => prev.filter((x) => x !== id));
+}
+
+export function clearGeneratingIds() {
+  setGeneratingIds([]);
+}
 
 // ── File drop hover (FileTable overlay; App sets) ──
 export const [isFileDropHovering, setFileDropHovering] = createSignal(false);
