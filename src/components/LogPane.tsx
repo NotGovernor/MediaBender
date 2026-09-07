@@ -25,8 +25,6 @@ export default function LogPane() {
           <Show when={logEntries().length > 0}>
             <span class="text-xs text-text-muted">({logEntries().length})</span>
           </Show>
-        </div>
-        <div class="flex items-center gap-2">
           <Show when={logEntries().length > 0}>
             <button
               onClick={(e) => {
@@ -38,8 +36,8 @@ export default function LogPane() {
               Clear
             </button>
           </Show>
-          <span class="text-text-muted text-xs">{logPaneOpen() ? "▼" : "▲"}</span>
         </div>
+        <span class="text-text-muted text-xs">{logPaneOpen() ? "▼" : "▲"}</span>
       </div>
 
       {/* Log content */}

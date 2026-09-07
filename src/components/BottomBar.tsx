@@ -9,6 +9,8 @@ import {
   addLog,
   setConfirmDialogOpen,
   setConfirmDialogConfig,
+  isProcessing,
+  isGenerating,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
 import { scanPendingAfterAdd } from "../lib/scanPendingAfterAdd";
@@ -79,7 +81,7 @@ export default function BottomBar() {
   };
 
   const handleClearQueue = () => {
-    if (workQueue().files.length === 0) return;
+    if (workQueue().files.length === 0 || isProcessing() || isGenerating()) return;
     setConfirmDialogConfig({
       title: "Clear Queue?",
       message: "This will remove all files from the current queue. This action cannot be undone.",
@@ -132,15 +134,13 @@ export default function BottomBar() {
 
   return (
     <div class="h-12 bg-bg-secondary border-t border-border flex items-center px-4 gap-3 flex-shrink-0">
-      <button
-        onClick={handleClearQueue}
-        disabled={workQueue().files.length === 0}
-        class="px-3 py-1.5 rounded text-xs font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      >
-        Clear Queue
-      </button>
-
       <div class="flex-1 flex items-center gap-2 min-w-0">
+        <button
+          onClick={handleSelectOutputFolder}
+          class="px-2.5 py-1 rounded text-xs font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors flex-shrink-0"
+        >
+          Select...
+        </button>
         <span class="text-xs text-text-muted flex-shrink-0">Output:</span>
         {outputFolder() ? (
           <span class="text-xs text-text-primary truncate min-w-0" title={outputFolder()}>
@@ -151,13 +151,15 @@ export default function BottomBar() {
             No output folder selected — select one before processing
           </span>
         )}
-        <button
-          onClick={handleSelectOutputFolder}
-          class="px-2.5 py-1 rounded text-xs font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors flex-shrink-0"
-        >
-          Select...
-        </button>
       </div>
+
+      <button
+        onClick={handleClearQueue}
+        disabled={workQueue().files.length === 0 || isProcessing() || isGenerating()}
+        class="px-3 py-1.5 rounded text-xs font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+      >
+        Clear Queue
+      </button>
 
       {/* Split Add Button */}
       <div class="relative flex-shrink-0">
