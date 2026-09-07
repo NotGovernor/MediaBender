@@ -48,7 +48,7 @@ describe("TopBar", () => {
 
     render(() => <TopBar />);
 
-    const startButton = screen.getByText("Start Processing");
+    const startButton = screen.getByRole("button", { name: /Start Processing/ });
     fireEvent.click(startButton);
 
     await waitFor(() => {
@@ -95,7 +95,7 @@ describe("TopBar", () => {
 
     render(() => <TopBar />);
 
-    fireEvent.click(screen.getByText("Start Processing"));
+    fireEvent.click(screen.getByRole("button", { name: /Start Processing/ }));
 
     await waitFor(() => {
       const errorLogs = logEntries().filter((e) => e.level === "error");
@@ -331,6 +331,49 @@ describe("TopBar", () => {
     await waitFor(() => {
       const files = workQueue().files;
       expect(files.find((f) => f.id === "a")!.output_path).toBe("/media/output/Generated.mkv");
+    });
+  });
+
+  it("disables_Start_when_only_approved_completed_exist", () => {
+    const fileA = createMockFile({ id: "a", status: "Completed", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+
+    render(() => <TopBar />);
+
+    const startButton = screen.getByRole("button", { name: /Start Processing/ }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(true);
+    expect(startButton.textContent).toBe("Start Processing");
+  });
+
+  it("labels_Start_with_eligible_count_and_ignores_approved_completed", () => {
+    const pendingApproved = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    const pendingNo = createMockFile({ id: "b", status: "Pending", is_approved: false });
+    const completedApproved = createMockFile({ id: "c", status: "Completed", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [pendingApproved, pendingNo, completedApproved] }));
+
+    render(() => <TopBar />);
+
+    const startButton = screen.getByRole("button", { name: /Start Processing/ }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(false);
+    expect(startButton.textContent).toBe("Start Processing (1)");
+  });
+
+  it("invokes_start_processing_with_only_approved_pending_ids", async () => {
+    const pendingApproved = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    const pendingNo = createMockFile({ id: "b", status: "Pending", is_approved: false });
+    const completedApproved = createMockFile({ id: "c", status: "Completed", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [pendingApproved, pendingNo, completedApproved] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    render(() => <TopBar />);
+    fireEvent.click(screen.getByRole("button", { name: /Start Processing/ }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("start_processing", expect.objectContaining({
+        fileIds: ["a"],
+      }));
     });
   });
 });

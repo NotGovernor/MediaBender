@@ -12,6 +12,7 @@ import {
   isFileDropHovering,
 } from "../stores/appStore";
 import type { VideoFile, FileStatus, WorkQueue } from "../types";
+import { isStartEligible } from "../lib/queueReadiness";
 
 function formatDuration(seconds: number): string {
   if (!seconds) return "--";
@@ -115,7 +116,10 @@ export default function FileTable() {
             <For each={files()}>
               {(file) => (
                 <tr
-                  class="border-b border-border hover:bg-bg-tertiary/50 cursor-pointer transition-colors group"
+                  data-start-eligible={isStartEligible(file) ? "true" : "false"}
+                  class={`border-b border-border border-l-2 hover:bg-bg-tertiary/50 cursor-pointer transition-colors group ${
+                    isStartEligible(file) ? "border-l-gold" : "border-l-transparent"
+                  }`}
                   onClick={() => handleRowClick(file)}
                 >
                   <td class="px-4 py-2">
@@ -133,7 +137,7 @@ export default function FileTable() {
                     {formatDuration(file.metadata?.duration ?? 0)}
                   </td>
                   <td class="px-3 py-2">
-                    <StatusBadge status={file.status} />
+                    <StatusBadge status={file.status} isApproved={file.is_approved} />
                   </td>
                   <td class="px-3 py-2 text-text-secondary">
                     <div class="truncate max-w-[240px]" title={file.description}>

@@ -181,4 +181,46 @@ describe("FileTable", () => {
       expect(workQueue().files).toHaveLength(0);
     });
   });
+
+  it("shows_Approved_badge_and_start_eligible_bar_only_on_approved_pending_rows", () => {
+    const pending = createMockFile({
+      id: "p",
+      input_path: "/media/movies/PendingMovie.mkv",
+      is_approved: false,
+      status: "Pending",
+    });
+    const ready = createMockFile({
+      id: "r",
+      input_path: "/media/movies/ReadyMovie.mkv",
+      is_approved: true,
+      status: "Pending",
+    });
+    const done = createMockFile({
+      id: "c",
+      input_path: "/media/movies/DoneMovie.mkv",
+      is_approved: true,
+      status: "Completed",
+    });
+    setWorkQueue((q) => ({ ...q, files: [pending, ready, done] }));
+
+    render(() => <FileTable />);
+
+    expect(screen.getByText("Pending")).toBeTruthy();
+    expect(screen.getByText("Approved")).toBeTruthy();
+    expect(screen.getByText("Completed")).toBeTruthy();
+
+    const pendingRow = screen.getByText("PendingMovie.mkv").closest("tr")!;
+    const readyRow = screen.getByText("ReadyMovie.mkv").closest("tr")!;
+    const doneRow = screen.getByText("DoneMovie.mkv").closest("tr")!;
+
+    expect(pendingRow.getAttribute("data-start-eligible")).toBe("false");
+    expect(readyRow.getAttribute("data-start-eligible")).toBe("true");
+    expect(doneRow.getAttribute("data-start-eligible")).toBe("false");
+
+    expect(readyRow.className).toContain("border-l-gold");
+    expect(pendingRow.className).toContain("border-l-transparent");
+    expect(doneRow.className).toContain("border-l-transparent");
+    expect(pendingRow.className).not.toContain("border-l-gold");
+    expect(doneRow.className).not.toContain("border-l-gold");
+  });
 });

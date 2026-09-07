@@ -11,10 +11,11 @@ import {
   setPreflightModalOpen,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
+import { isStartEligible } from "../lib/queueReadiness";
 
 export default function TopBar() {
-  const approvedCount = () =>
-    workQueue().files.filter((f) => f.is_approved && f.status !== "Skipped").length;
+  const startEligibleCount = () =>
+    workQueue().files.filter(isStartEligible).length;
   const analyzedCount = () =>
     workQueue().files.filter((f) => f.metadata && !f.generated_command).length;
   const processingCount = () =>
@@ -128,9 +129,7 @@ export default function TopBar() {
     }
 
     const s = settings();
-    const approvedPending = workQueue().files
-      .filter((f) => f.is_approved && f.status === "Pending")
-      .map((f) => f.id);
+    const approvedPending = workQueue().files.filter(isStartEligible).map((f) => f.id);
 
     if (approvedPending.length === 0) {
       addLog({
@@ -224,10 +223,12 @@ export default function TopBar() {
         fallback={
           <button
             onClick={handleStart}
-            disabled={approvedCount() === 0}
+            disabled={startEligibleCount() === 0}
             class="px-4 py-1.5 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            Start Processing
+            {startEligibleCount() > 0
+              ? `Start Processing (${startEligibleCount()})`
+              : "Start Processing"}
           </button>
         }
       >

@@ -1,10 +1,15 @@
 import type { FileStatus } from "../types";
+import {
+  displayFileStatus,
+  type DisplayFileStatus,
+} from "../lib/queueReadiness";
 
 const statusConfig: Record<
-  FileStatus,
+  DisplayFileStatus,
   { label: string; bg: string; text: string }
 > = {
   Pending: { label: "Pending", bg: "bg-status-pending/20", text: "text-status-pending" },
+  Approved: { label: "Approved", bg: "bg-gold/20", text: "text-gold" },
   Generating: { label: "Generating", bg: "bg-status-generating/20", text: "text-status-generating" },
   Processing: { label: "Processing", bg: "bg-status-processing/20", text: "text-status-processing" },
   Completed: { label: "Completed", bg: "bg-status-completed/20", text: "text-status-completed" },
@@ -12,13 +17,17 @@ const statusConfig: Record<
   Skipped: { label: "Skipped", bg: "bg-status-skipped/20", text: "text-status-skipped" },
 };
 
-export default function StatusBadge(props: { status: FileStatus }) {
-  const config = () => statusConfig[props.status];
+export default function StatusBadge(props: {
+  status: FileStatus;
+  isApproved?: boolean;
+}) {
+  const display = () => displayFileStatus(props.status, props.isApproved === true);
+  const config = () => statusConfig[display()];
   return (
     <span
       class={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${config().bg} ${config().text}`}
     >
-      {props.status === "Processing" || props.status === "Generating" ? (
+      {display() === "Processing" || display() === "Generating" ? (
         <svg
           class="w-3 h-3 mr-1 animate-spin"
           fill="none"

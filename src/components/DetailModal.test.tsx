@@ -415,4 +415,34 @@ describe("DetailModal", () => {
       expect(updated.status).toBe("Pending");
     });
   });
+
+  it("pending_approved_shows_single_Approved_badge_without_chip", () => {
+    const mockFile = createMockFile({
+      status: "Pending",
+      is_approved: true,
+      output_size: 0,
+      processing_duration: 0,
+      completed_at: "",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    expect(screen.getAllByText("Approved")).toHaveLength(1);
+    expect(screen.queryByText("Pending")).toBeFalsy();
+  });
+
+  it("completed_approved_shows_Completed_not_Approved", () => {
+    const mockFile = createMockFile({ status: "Completed", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    expect(screen.getAllByText("Completed").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Approved")).toBeFalsy();
+  });
 });

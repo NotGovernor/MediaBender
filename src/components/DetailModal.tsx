@@ -164,12 +164,7 @@ export default function DetailModal() {
             {/* Status */}
             <div class="flex items-center gap-3">
               <span class="text-xs font-mono uppercase tracking-wider text-text-muted">Status</span>
-              <StatusBadge status={f().status} />
-              <Show when={f().is_approved && f().status !== "Skipped"}>
-                <span class="text-xs text-gold bg-gold/10 px-2 py-0.5 rounded border border-gold/20">
-                  Approved
-                </span>
-              </Show>
+              <StatusBadge status={f().status} isApproved={f().is_approved} />
             </div>
 
             {/* Input / Output Grid */}

@@ -33,4 +33,27 @@ describe("StatusBadge", () => {
       unmount();
     }
   });
+
+  it("renders_Approved_for_pending_when_isApproved", () => {
+    render(() => <StatusBadge status="Pending" isApproved />);
+    expect(screen.getByText("Approved")).toBeTruthy();
+    expect(screen.queryByText("Pending")).toBeFalsy();
+    expect(document.querySelector("svg")).toBeFalsy();
+    const el = screen.getByText("Approved");
+    expect(el.className).toContain("text-gold");
+    expect(el.className).toContain("bg-gold/20");
+    expect(el.className).not.toContain("text-status-completed");
+    expect(el.className).not.toContain("bg-status-approved");
+  });
+
+  it("renders_Pending_when_not_approved", () => {
+    render(() => <StatusBadge status="Pending" />);
+    expect(screen.getByText("Pending")).toBeTruthy();
+  });
+
+  it("renders_Completed_not_Approved_when_completed_and_approved", () => {
+    render(() => <StatusBadge status="Completed" isApproved />);
+    expect(screen.getByText("Completed")).toBeTruthy();
+    expect(screen.queryByText("Approved")).toBeFalsy();
+  });
 });
