@@ -57,7 +57,7 @@ export default function ReviewModal() {
   });
 
   const handleApprove = async () => {
-    if (!file()) return;
+    if (!file() || file()!.generated_command === "") return;
     try {
       const q = await invoke<WorkQueue>("approve_file", {
         fileId: file()!.id,
@@ -412,7 +412,8 @@ export default function ReviewModal() {
                         </button>
                         <button
                           onClick={handleApprove}
-                          class="px-4 py-2 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light transition-colors"
+                          disabled={f().generated_command === ""}
+                          class="px-4 py-2 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                         >
                           Approve
                         </button>

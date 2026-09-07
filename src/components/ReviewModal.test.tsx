@@ -799,4 +799,31 @@ describe("ReviewModal", () => {
       expect.anything(),
     );
   });
+
+  it("disables_Approve_when_generated_command_is_empty", () => {
+    const mockFile = createMockFile({ generated_command: "" });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setReviewModalOpen(true);
+
+    render(() => <ReviewModal />);
+
+    const approveButton = screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+    expect(approveButton.disabled).toBe(true);
+  });
+
+  it("enables_Approve_when_generated_command_exists", () => {
+    const mockFile = createMockFile({
+      generated_command: "ffmpeg -i input.mkv output.mkv",
+      is_approved: false,
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setReviewModalOpen(true);
+
+    render(() => <ReviewModal />);
+
+    const approveButton = screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+    expect(approveButton.disabled).toBe(false);
+  });
 });
