@@ -210,6 +210,24 @@ fn normalize_path(path: &str) -> String {
         .to_string()
 }
 
+/// Windows FFmpeg argv form. UNC `//server/share` → `\\server\share`.
+/// Idempotent on already-native backslash paths. Not used on Unix spawn.
+pub fn to_native_windows_path(path: &str) -> String {
+    path.replace('/', "\\")
+}
+
+/// Convert the `-i` operand and the final output token only.
+pub fn apply_windows_native_paths(argv: &mut [String]) {
+    if let Some(i) = argv.iter().position(|t| t == "-i") {
+        if let Some(slot) = argv.get_mut(i + 1) {
+            *slot = to_native_windows_path(slot);
+        }
+    }
+    if let Some(last) = argv.last_mut() {
+        *last = to_native_windows_path(last);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +566,34 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_output_path_unc_preserves_relative_dir() {
+        let path = resolve_output_path(
+            r"\\socrates\Movies\Hellboy",
+            r"\\socrates\Movies\Hellboy\1\Hellboy.mkv",
+            r"\\socrates\TheChasm\Media\MoviesTemp",
+            "{name}.mkv",
+        );
+        assert_eq!(
+            path,
+            "//socrates/TheChasm/Media/MoviesTemp/1/Hellboy.mkv"
+        );
+    }
+
+    #[test]
+    fn test_resolve_output_path_unc_drive_mixed_with_unc_output() {
+        let path = resolve_output_path(
+            r"J:\Movies\Hellboy",
+            r"J:\Movies\Hellboy\1\Hellboy.mkv",
+            r"\\socrates\TheChasm\Media\MoviesTemp",
+            "{name}.mkv",
+        );
+        assert_eq!(
+            path,
+            "//socrates/TheChasm/Media/MoviesTemp/1/Hellboy.mkv"
+        );
+    }
+
+    #[test]
     fn assemble_argv_places_hwaccel_before_dash_i() {
         let argv = assemble_argv(
             "-hwaccel cuda -hwaccel_output_format cuda -c:v hevc_nvenc -cq 23 -y",
@@ -598,5 +644,45 @@ mod tests {
     fn assemble_argv_peels_dash_y_to_pre_input() {
         let argv = assemble_argv("-c:v copy -y", "/in.mkv", "/out.mkv");
         assert_eq!(argv, vec!["-y", "-i", "/in.mkv", "-c:v", "copy", "/out.mkv"]);
+    }
+
+    #[test]
+    fn to_native_windows_path_unc_forward_slash() {
+        assert_eq!(
+            to_native_windows_path("//socrates/TheChasm/Media/MoviesTemp/1/Hellboy.mkv"),
+            r"\\socrates\TheChasm\Media\MoviesTemp\1\Hellboy.mkv"
+        );
+    }
+
+    #[test]
+    fn to_native_windows_path_drive_letter() {
+        assert_eq!(
+            to_native_windows_path("D:/Transcoded/Show/Episode.mkv"),
+            r"D:\Transcoded\Show\Episode.mkv"
+        );
+    }
+
+    #[test]
+    fn to_native_windows_path_already_native_unc() {
+        assert_eq!(
+            to_native_windows_path(r"\\socrates\share\a.mkv"),
+            r"\\socrates\share\a.mkv"
+        );
+    }
+
+    #[test]
+    fn apply_windows_native_paths_converts_input_and_output_only() {
+        let mut argv = vec![
+            "-i".to_string(),
+            "//socrates/share/in.mkv".to_string(),
+            "-c:v".to_string(),
+            "copy".to_string(),
+            "//socrates/share/out/1/Hellboy.mkv".to_string(),
+        ];
+        apply_windows_native_paths(&mut argv);
+        assert_eq!(argv[1], r"\\socrates\share\in.mkv");
+        assert_eq!(argv[2], "-c:v");
+        assert_eq!(argv[3], "copy");
+        assert_eq!(argv[4], r"\\socrates\share\out\1\Hellboy.mkv");
     }
 }

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub async fn delete_output_file(output_path: String) -> Result<(), String> {
     if output_path.is_empty() {
@@ -11,4 +11,64 @@ pub async fn delete_output_file(output_path: String) -> Result<(), String> {
     tokio::fs::remove_file(&path)
         .await
         .map_err(|e| format!("Failed to delete output file: {}", e))
+}
+
+pub fn ensure_output_parent(output_path: &str) -> Result<(), String> {
+    if output_path.trim().is_empty() {
+        return Err("Output path is empty".to_string());
+    }
+    let path = Path::new(output_path);
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Could not create output directory {}: {}",
+            parent.display(),
+            e
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_output_parent;
+    use std::fs;
+
+    #[test]
+    fn ensure_output_parent_creates_nested_dirs() {
+        let root = std::env::temp_dir().join(format!("mb-mkdir-{}", uuid::Uuid::new_v4()));
+        let output = root.join("1").join("Hellboy.mkv");
+        ensure_output_parent(&output.to_string_lossy()).unwrap();
+        assert!(root.join("1").is_dir());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_output_parent_ok_when_parent_exists() {
+        let output = std::env::temp_dir().join(format!("mb-exists-{}.mkv", uuid::Uuid::new_v4()));
+        ensure_output_parent(&output.to_string_lossy()).unwrap();
+    }
+
+    #[test]
+    fn ensure_output_parent_errors_on_empty() {
+        let err = ensure_output_parent("").unwrap_err();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn ensure_output_parent_errors_when_parent_is_a_file() {
+        let file = std::env::temp_dir().join(format!("mb-notdir-{}", uuid::Uuid::new_v4()));
+        fs::write(&file, b"x").unwrap();
+        let output = file.join("Hellboy.mkv");
+        let err = ensure_output_parent(&output.to_string_lossy()).unwrap_err();
+        assert!(
+            err.starts_with("Could not create output directory"),
+            "got {err}"
+        );
+        let _ = fs::remove_file(&file);
+    }
 }

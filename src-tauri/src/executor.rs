@@ -190,11 +190,29 @@ impl FFmpegExecutor {
                 .await;
             return Err("No command to execute".to_string());
         }
-        let args = crate::command_builder::assemble_argv(
+        let mut args = crate::command_builder::assemble_argv(
             &file.command_args,
             &file.input_path,
             &file.output_path,
         );
+        #[cfg(windows)]
+        crate::command_builder::apply_windows_native_paths(&mut args);
+
+        let output_for_fs = args.last().cloned().unwrap_or_else(|| file.output_path.clone());
+        if let Err(message) = crate::fs_ops::ensure_output_parent(&output_for_fs) {
+            let completed_at = chrono::Utc::now().to_rfc3339();
+            let _ = tx
+                .send(ExecutorEvent::Completed {
+                    file_id: file.id.clone(),
+                    success: false,
+                    message: message.clone(),
+                    output_size: 0,
+                    processing_duration: 0.0,
+                    completed_at,
+                })
+                .await;
+            return Err(message);
+        }
 
         let mut cmd = crate::process_cmd::media_command(ffmpeg_path);
         for arg in &args {
@@ -275,13 +293,16 @@ impl FFmpegExecutor {
         }
 
         // Spawn stderr reader (ffmpeg outputs progress to stderr)
-        if let Some(stderr) = stderr {
+        let stderr_buf = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let stderr_task = if let Some(stderr) = stderr {
             let tx = tx_clone.clone();
             let fid = file_id.clone();
-            tokio::spawn(async move {
+            let buf = stderr_buf.clone();
+            Some(tokio::spawn(async move {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    buf.lock().await.push(line.clone());
                     let _ = tx
                         .send(ExecutorEvent::Stderr {
                             file_id: fid.clone(),
@@ -289,8 +310,10 @@ impl FFmpegExecutor {
                         })
                         .await;
                 }
-            });
-        }
+            }))
+        } else {
+            None
+        };
 
         // Wait for process to complete (child stays in tracker until done)
         let status = match self.tracker.wait_and_remove(child_id).await {
@@ -313,11 +336,16 @@ impl FFmpegExecutor {
             }
         };
 
+        if let Some(task) = stderr_task {
+            let _ = task.await;
+        }
+
+        let stderr_lines = stderr_buf.lock().await.clone();
         let success = status.success();
         let message = if success {
             "Transcoding completed successfully".to_string()
         } else {
-            format!("Transcoding failed with exit code: {:?}", status.code())
+            summarize_ffmpeg_failure(&stderr_lines)
         };
 
         // Get output file size on success
@@ -354,10 +382,114 @@ impl FFmpegExecutor {
     }
 }
 
+const FFMPEG_ERROR_MESSAGE_MAX: usize = 1000;
+
+pub(crate) fn summarize_ffmpeg_failure(stderr_lines: &[String]) -> String {
+    let non_progress: Vec<&str> = stderr_lines
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|l| !is_ffmpeg_progress_line(l) && !l.trim().is_empty())
+        .collect();
+    let errorish: Vec<&str> = non_progress
+        .iter()
+        .copied()
+        .filter(|l| is_ffmpeg_error_line(l))
+        .collect();
+    let pick: Vec<&str> = if !errorish.is_empty() {
+        let n = errorish.len();
+        errorish[n.saturating_sub(3)..].to_vec()
+    } else if let Some(last) = non_progress.last() {
+        vec![*last]
+    } else {
+        return "Transcoding failed".to_string();
+    };
+    let mut out = pick.join("\n");
+    if out.len() > FFMPEG_ERROR_MESSAGE_MAX {
+        let mut end = FFMPEG_ERROR_MESSAGE_MAX;
+        while end > 0 && !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+    }
+    out
+}
+
+fn is_ffmpeg_progress_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("frame=") || (t.contains("frame=") && t.contains("fps="))
+}
+
+fn is_ffmpeg_error_line(line: &str) -> bool {
+    let l = line.to_ascii_lowercase();
+    l.contains("error")
+        || l.contains("failed")
+        || l.contains("invalid argument")
+        || l.contains("no such file")
+        || l.contains("permission denied")
+        || l.contains("unknown encoder")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{FileStatus, VideoFile};
+
+    #[test]
+    fn summarize_ffmpeg_failure_prefers_last_error_lines() {
+        let lines = vec![
+            "frame=  12 fps=  1 q=28.0 size=     256kB time=00:00:01.00 bitrate= 123.4kbits/s speed=1.0x".to_string(),
+            "[out#0/matroska @ 0000029827418800] Error opening output //socrates/TheChasm/Media/MoviesTemp/1/Hellboy.mkv: No such file or directory".to_string(),
+            "Error opening output file //socrates/TheChasm/Media/MoviesTemp/1/Hellboy.mkv.".to_string(),
+            "Error opening output files: No such file or directory".to_string(),
+        ];
+        let msg = summarize_ffmpeg_failure(&lines);
+        assert!(msg.contains("Error opening output"));
+        assert!(msg.contains("No such file or directory"));
+        assert!(!msg.contains("frame="));
+        assert!(!msg.contains("exit code"));
+        assert!(!msg.contains("Some("));
+    }
+
+    #[test]
+    fn summarize_ffmpeg_failure_falls_back_to_last_non_progress_line() {
+        let lines = vec![
+            "frame=  1 fps= 1".to_string(),
+            "    ".to_string(),
+            "nothing useful here".to_string(),
+        ];
+        assert_eq!(summarize_ffmpeg_failure(&lines), "nothing useful here");
+    }
+
+    #[test]
+    fn summarize_ffmpeg_failure_empty_is_generic() {
+        assert_eq!(summarize_ffmpeg_failure(&[]), "Transcoding failed");
+        assert_eq!(
+            summarize_ffmpeg_failure(&["frame=  1 fps= 1".to_string()]),
+            "Transcoding failed"
+        );
+    }
+
+    #[test]
+    fn summarize_ffmpeg_failure_caps_length() {
+        let long = format!("Error {}", "x".repeat(2000));
+        let msg = summarize_ffmpeg_failure(&[long]);
+        assert!(msg.len() <= 1000);
+        assert!(msg.starts_with("Error "));
+    }
+
+    #[test]
+    fn summarize_ffmpeg_failure_caps_length_on_multibyte_char_boundary() {
+        // "Error " = 6 bytes + 993 ASCII 'x' = 999; 'é' is 2 bytes → 1001 total.
+        // Byte 1000 is mid-character, so String::truncate(1000) panics.
+        let mut long = format!("Error {}", "x".repeat(993));
+        long.push('é');
+        assert_eq!(long.len(), 1001);
+        assert!(!long.is_char_boundary(1000));
+        let msg = summarize_ffmpeg_failure(&[long]);
+        assert!(msg.len() <= 1000);
+        assert!(msg.is_char_boundary(msg.len()));
+        assert!(msg.starts_with("Error "));
+    }
 
     // ── Regression test for Stop button bug ──
     // Ensures that cancelling the pipeline token prevents queued tasks from
@@ -597,7 +729,10 @@ mod tests {
         let file = VideoFile {
             id: "test-id".to_string(),
             input_path: "/tmp/input.mkv".to_string(),
-            output_path: "/tmp/output.mkv".to_string(),
+            output_path: std::env::temp_dir()
+                .join("mb-exec-out.mkv")
+                .to_string_lossy()
+                .into_owned(),
             scan_root: "/tmp".to_string(),
             ffprobe_raw: "".to_string(),
             metadata: None,
@@ -652,7 +787,10 @@ mod tests {
         let file = VideoFile {
             id: "test-id".to_string(),
             input_path: "/tmp/input.mkv".to_string(),
-            output_path: "/tmp/output.mkv".to_string(),
+            output_path: std::env::temp_dir()
+                .join("mb-exec-out.mkv")
+                .to_string_lossy()
+                .into_owned(),
             scan_root: "/tmp".to_string(),
             ffprobe_raw: "".to_string(),
             metadata: None,
@@ -702,7 +840,10 @@ mod tests {
         let file = VideoFile {
             id: "test-id".to_string(),
             input_path: "/tmp/input.mkv".to_string(),
-            output_path: "/tmp/output.mkv".to_string(),
+            output_path: std::env::temp_dir()
+                .join("mb-exec-out.mkv")
+                .to_string_lossy()
+                .into_owned(),
             scan_root: "/tmp".to_string(),
             ffprobe_raw: "".to_string(),
             metadata: None,
@@ -750,7 +891,10 @@ mod tests {
         let file = VideoFile {
             id: "test-id".to_string(),
             input_path: "/tmp/input.mkv".to_string(),
-            output_path: "/tmp/output.mkv".to_string(),
+            output_path: std::env::temp_dir()
+                .join("mb-exec-out.mkv")
+                .to_string_lossy()
+                .into_owned(),
             scan_root: "/tmp".to_string(),
             ffprobe_raw: "".to_string(),
             metadata: None,
@@ -799,7 +943,10 @@ mod tests {
         let file = VideoFile {
             id: "test-id".to_string(),
             input_path: "/tmp/input.mkv".to_string(),
-            output_path: "/tmp/output.mkv".to_string(),
+            output_path: std::env::temp_dir()
+                .join("mb-exec-out.mkv")
+                .to_string_lossy()
+                .into_owned(),
             scan_root: "/tmp".to_string(),
             ffprobe_raw: "".to_string(),
             metadata: None,
@@ -848,7 +995,10 @@ mod tests {
         let file = VideoFile {
             id: "test-id".to_string(),
             input_path: "/tmp/input.mkv".to_string(),
-            output_path: "/tmp/output.mkv".to_string(),
+            output_path: std::env::temp_dir()
+                .join("mb-exec-out.mkv")
+                .to_string_lossy()
+                .into_owned(),
             scan_root: "/tmp".to_string(),
             ffprobe_raw: "".to_string(),
             metadata: None,
@@ -953,5 +1103,109 @@ mod tests {
             .await
             .expect("add must succeed after arm");
         tracker.kill_all().await;
+    }
+
+    fn sample_file(output_path: String) -> VideoFile {
+        VideoFile {
+            id: "test-id".to_string(),
+            input_path: "/tmp/input.mkv".to_string(),
+            output_path,
+            scan_root: "/tmp".to_string(),
+            ffprobe_raw: "".to_string(),
+            metadata: None,
+            generated_command: "".to_string(),
+            command_args: "-c:v copy".to_string(),
+            description: "".to_string(),
+            reasoning: "".to_string(),
+            status: FileStatus::Pending,
+            is_approved: false,
+            error_message: "".to_string(),
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
+            input_size: 0,
+            output_size: 0,
+            processing_duration: 0.0,
+            completed_at: "".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_creates_nested_output_parent() {
+        let root = std::env::temp_dir().join(format!("mb-exec-mkdir-{}", uuid::Uuid::new_v4()));
+        let output = root.join("1").join("Hellboy.mkv");
+        let tracker = Arc::new(ProcessTracker::new());
+        let executor = FFmpegExecutor::new(tracker);
+        let (tx, mut rx) = mpsc::channel::<ExecutorEvent>(10);
+        let file = sample_file(output.to_string_lossy().into_owned());
+        let result = executor.execute(&file, "true", tx).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(root.join("1").is_dir());
+        while rx.try_recv().is_ok() {}
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn execute_mkdir_failure_emits_completed_without_started() {
+        let blocker = std::env::temp_dir().join(format!("mb-exec-notdir-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&blocker, b"x").unwrap();
+        let output = blocker.join("1").join("Hellboy.mkv");
+        let tracker = Arc::new(ProcessTracker::new());
+        let executor = FFmpegExecutor::new(tracker);
+        let (tx, mut rx) = mpsc::channel::<ExecutorEvent>(10);
+        let file = sample_file(output.to_string_lossy().into_owned());
+        let result = executor.execute(&file, "true", tx).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.starts_with("Could not create output directory"),
+            "got {err}"
+        );
+        let event = rx.recv().await.expect("Completed");
+        match event {
+            ExecutorEvent::Completed {
+                success, message, ..
+            } => {
+                assert!(!success);
+                assert_eq!(message, err);
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "must not emit Started");
+        let _ = std::fs::remove_file(&blocker);
+    }
+
+    #[tokio::test]
+    async fn execute_nonzero_exit_message_is_not_exit_code() {
+        let tracker = Arc::new(ProcessTracker::new());
+        let executor = FFmpegExecutor::new(tracker);
+        let (tx, mut rx) = mpsc::channel::<ExecutorEvent>(32);
+        let file = sample_file(
+            std::env::temp_dir()
+                .join("mb-exec-false.mkv")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let result = executor.execute(&file, "false", tx).await;
+        assert!(result.is_err());
+        let mut message = String::new();
+        while let Ok(ev) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            rx.recv(),
+        )
+        .await
+        {
+            match ev {
+                Some(ExecutorEvent::Completed { message: m, success, .. }) => {
+                    assert!(!success);
+                    message = m;
+                    break;
+                }
+                Some(_) => continue,
+                None => break,
+            }
+        }
+        assert_eq!(message, "Transcoding failed");
+        assert!(!message.contains("exit code"));
+        assert!(!message.contains("Some("));
     }
 }
