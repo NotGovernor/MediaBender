@@ -459,6 +459,21 @@ mod tests {
         }
     }
 
+    fn force_kill_tree(pid: u32) {
+        if cfg!(windows) {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .output();
+        } else {
+            let _ = std::process::Command::new("pkill")
+                .args(["-KILL", "-P", &pid.to_string()])
+                .output();
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .output();
+        }
+    }
+
     /// Parent python that spawns a child sleeper and writes the child's pid to `pid_path`.
     fn spawn_python_tree(pid_path: &std::path::Path) -> Command {
         let script = format!(
@@ -518,12 +533,8 @@ mod tests {
         let grandchild_alive = process_exists(grandchild_pid);
         // Do not leak 600s sleepers if kill_all is still broken.
         if parent_alive || grandchild_alive {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &parent_pid.to_string()])
-                .output();
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &grandchild_pid.to_string()])
-                .output();
+            force_kill_tree(parent_pid);
+            force_kill_tree(grandchild_pid);
         }
         let _ = std::fs::remove_file(&pid_path);
         assert!(
