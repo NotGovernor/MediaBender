@@ -4,6 +4,18 @@ import {
   workQueue,
   setFilesProcessing,
   resetProcessingFiles,
+  closeModals,
+  setSelectedFileId,
+  selectedFileId,
+  setDetailModalOpen,
+  detailModalOpen,
+  setReviewModalOpen,
+  reviewModalOpen,
+  setConfirmDialogOpen,
+  confirmDialogOpen,
+  handoffToReview,
+  pendingReviewRegenerateFeedback,
+  setPendingReviewRegenerateFeedback,
 } from "./appStore";
 import { createMockFile } from "../test-helpers";
 
@@ -48,5 +60,44 @@ describe("appStore processing helpers", () => {
     expect(files.find((f) => f.id === "b")!.status).toBe("Pending");
     expect(files.find((f) => f.id === "c")!.status).toBe("Completed");
     expect(files.find((f) => f.id === "d")!.status).toBe("Error");
+  });
+});
+
+describe("appStore modal helpers", () => {
+  beforeEach(() => {
+    closeModals();
+    setWorkQueue({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+  });
+
+  it("handoffToReview closes Detail, opens Review, keeps selectedFileId, leaves confirm alone", () => {
+    setSelectedFileId("file-1");
+    setDetailModalOpen(true);
+    setReviewModalOpen(false);
+    setConfirmDialogOpen(true);
+
+    handoffToReview("file-1");
+
+    expect(selectedFileId()).toBe("file-1");
+    expect(detailModalOpen()).toBe(false);
+    expect(reviewModalOpen()).toBe(true);
+    expect(confirmDialogOpen()).toBe(true);
+  });
+
+  it("closeModals clears pendingReviewRegenerateFeedback", () => {
+    setPendingReviewRegenerateFeedback("use hevc");
+    closeModals();
+    expect(pendingReviewRegenerateFeedback()).toBeNull();
+  });
+
+  it("handoffToReview does not clear pendingReviewRegenerateFeedback", () => {
+    setPendingReviewRegenerateFeedback("use hevc");
+    handoffToReview("file-1");
+    expect(pendingReviewRegenerateFeedback()).toBe("use hevc");
   });
 });

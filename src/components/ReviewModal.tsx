@@ -11,6 +11,8 @@ import {
   setConfirmDialogConfig,
   workQueue,
   setWorkQueue,
+  pendingReviewRegenerateFeedback,
+  setPendingReviewRegenerateFeedback,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
 
@@ -101,11 +103,8 @@ export default function ReviewModal() {
     }
   };
 
-  const handleRegenerate = async () => {
+  const regenerateWithFeedback = async (fb: string) => {
     if (!file()) return;
-    const fb = feedback().trim();
-    // For regeneration (command exists), feedback is required
-    if (file()!.generated_command !== "" && !fb) return;
 
     setIsRegenerating(true);
     addLog({
@@ -144,6 +143,24 @@ export default function ReviewModal() {
       setIsRegenerating(false);
     }
   };
+
+  const handleRegenerate = async () => {
+    if (!file()) return;
+    const fb = feedback().trim();
+    // For regeneration (command exists), feedback is required
+    if (file()!.generated_command !== "" && !fb) return;
+    await regenerateWithFeedback(fb);
+  };
+
+  createEffect(() => {
+    const pending = pendingReviewRegenerateFeedback();
+    if (!pending) return;
+    if (!reviewModalOpen()) return;
+    if (!file()) return;
+    setPendingReviewRegenerateFeedback(null);
+    setFeedback(pending);
+    void regenerateWithFeedback(pending);
+  });
 
   const handleSkip = async () => {
     if (!file()) return;

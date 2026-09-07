@@ -104,6 +104,8 @@ export const [detailModalOpen, setDetailModalOpen] = createSignal(false);
 export const [ffprobeRawModalOpen, setFfprobeRawModalOpen] = createSignal(false);
 export const [preflightModalOpen, setPreflightModalOpen] = createSignal(false);
 export const [confirmDialogOpen, setConfirmDialogOpen] = createSignal(false);
+export const [pendingReviewRegenerateFeedback, setPendingReviewRegenerateFeedback] =
+  createSignal<string | null>(null);
 export const [confirmDialogConfig, setConfirmDialogConfig] = createSignal<{
   title: string;
   message: string;
@@ -134,6 +136,14 @@ export function openDetail(fileId: string) {
   setDetailModalOpen(true);
 }
 
+export function handoffToReview(fileId: string) {
+  setSelectedFileId(fileId);
+  setDetailModalOpen(false);
+  setFfprobeRawModalOpen(false);
+  setPreflightModalOpen(false);
+  setReviewModalOpen(true);
+}
+
 export function closeModals() {
   setReviewModalOpen(false);
   setDetailModalOpen(false);
@@ -141,6 +151,7 @@ export function closeModals() {
   setPreflightModalOpen(false);
   setConfirmDialogOpen(false);
   setSelectedFileId(null);
+  setPendingReviewRegenerateFeedback(null);
 }
 
 // ── Settings ──

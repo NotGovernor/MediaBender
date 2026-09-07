@@ -1,11 +1,21 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
 import DetailModal from "./DetailModal";
+import ReviewModal from "./ReviewModal";
 import {
   setWorkQueue,
   setSelectedFileId,
   setDetailModalOpen,
+  setReviewModalOpen,
+  setConfirmDialogOpen,
+  setPendingReviewRegenerateFeedback,
   workQueue,
+  selectedFileId,
+  detailModalOpen,
+  reviewModalOpen,
+  confirmDialogOpen,
+  confirmDialogConfig,
+  pendingReviewRegenerateFeedback,
 } from "../stores/appStore";
 import type { VideoFile } from "../types";
 
@@ -66,6 +76,11 @@ describe("DetailModal", () => {
       created_at: new Date().toISOString(),
       last_modified: new Date().toISOString(),
     });
+    setDetailModalOpen(false);
+    setReviewModalOpen(false);
+    setConfirmDialogOpen(false);
+    setSelectedFileId(null);
+    setPendingReviewRegenerateFeedback(null);
   });
 
   it("shows just the filename in the title without 'File Details' fallback", () => {
@@ -273,16 +288,59 @@ describe("DetailModal", () => {
     expect(screen.queryByText("Command Used")).toBeFalsy();
   });
 
-  it("calls handleResetStatus when Reset Status button is clicked", () => {
-    const mockFile = createMockFile();
+  it("opens Review and keeps the file selected after Reset Status succeeds", async () => {
+    const mockFile = createMockFile({ status: "Completed", is_approved: true });
     setWorkQueue((q) => ({ ...q, files: [mockFile] }));
     setSelectedFileId(mockFile.id);
     setDetailModalOpen(true);
 
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [
+        {
+          ...mockFile,
+          status: "Pending",
+          is_approved: false,
+        },
+      ],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+
     render(() => <DetailModal />);
 
-    const resetButton = screen.getByText("Reset Status");
-    expect(resetButton).toBeTruthy();
+    fireEvent.click(screen.getByText("Reset Status"));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("reset_file", { fileId: mockFile.id });
+      expect(detailModalOpen()).toBe(false);
+      expect(reviewModalOpen()).toBe(true);
+      expect(selectedFileId()).toBe(mockFile.id);
+    });
+  });
+
+  it("stays on Detail when Reset Status fails", async () => {
+    const mockFile = createMockFile({ status: "Error" });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("reset failed"));
+
+    render(() => <DetailModal />);
+
+    fireEvent.click(screen.getByText("Reset Status"));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("reset_file", { fileId: mockFile.id });
+    });
+
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(mockFile.id);
   });
 
   it("disables Regenerate Command button when feedback is empty", () => {
@@ -320,56 +378,111 @@ describe("DetailModal", () => {
     expect(screen.queryByText("Reprocess File")).toBeFalsy();
   });
 
-  it("closes the modal immediately when Regenerate Command is clicked", async () => {
-    const mockFile = createMockFile({
-      output_path: "",
-      generated_command: "ffmpeg -i input.mkv output.mkv",
-    });
+  it("opens delete confirm on top of Detail when Reprocess File is clicked", () => {
+    const mockFile = createMockFile();
     setWorkQueue((q) => ({ ...q, files: [mockFile] }));
     setSelectedFileId(mockFile.id);
     setDetailModalOpen(true);
 
-    const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockResolvedValueOnce({
-      output_folder: "/media/output",
-      guidelines: "",
-      files: [
-        {
-          ...mockFile,
-          generated_command: "ffmpeg -i input.mkv new_output.mkv",
-          command_args: "-c:v libx265",
-          description: "Updated description",
-          reasoning: "Updated reasoning",
-          error_message: "",
-          status: "Pending",
-          is_approved: false,
-          updated_at: new Date().toISOString(),
-          output_path: "/media/output/Regenerated.mkv",
-        },
-      ],
-      created_at: new Date().toISOString(),
-      last_modified: new Date().toISOString(),
-    });
-
     render(() => <DetailModal />);
 
-    const textarea = screen.getByPlaceholderText(
-      "e.g. Use 128k bitrate instead, or add -map_chapters 0..."
-    ) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: "Use HEVC instead" } });
+    fireEvent.click(screen.getByText("Reprocess File"));
 
-    const regenerateButton = screen.getByText("Regenerate Command") as HTMLButtonElement;
-    fireEvent.click(regenerateButton);
-
-    // Modal should be closed immediately (before async completes)
-    expect(screen.queryByText("Regenerate Command")).toBeFalsy();
+    expect(confirmDialogOpen()).toBe(true);
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(mockFile.id);
+    expect(confirmDialogConfig()?.title).toBe("Delete Output File?");
+    expect(confirmDialogConfig()?.message).toMatch(/command review/i);
+    expect(confirmDialogConfig()?.message).not.toMatch(/re-queued for processing/i);
   });
 
-  it("patches output_path, resets is_approved and status after Regenerate Command succeeds", async () => {
-    const mockFile = createMockFile({
-      output_path: "",
-      generated_command: "ffmpeg -i input.mkv output.mkv",
+  it("hands off to Review after Reprocess confirm deletes and resets", async () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    vi.mocked(invoke).mockResolvedValueOnce({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [
+        {
+          ...mockFile,
+          status: "Pending",
+          is_approved: false,
+        },
+      ],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
     });
+
+    render(() => <DetailModal />);
+
+    fireEvent.click(screen.getByText("Reprocess File"));
+    await confirmDialogConfig()!.onConfirm();
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("delete_output_file", {
+        outputPath: mockFile.output_path,
+      });
+      expect(invoke).toHaveBeenCalledWith("reset_file", { fileId: mockFile.id });
+      expect(reviewModalOpen()).toBe(true);
+      expect(detailModalOpen()).toBe(false);
+      expect(selectedFileId()).toBe(mockFile.id);
+    });
+  });
+
+  it("does not reset or hand off when delete_output_file fails", async () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("delete failed"));
+
+    render(() => <DetailModal />);
+
+    fireEvent.click(screen.getByText("Reprocess File"));
+    await confirmDialogConfig()!.onConfirm();
+
+    expect(invoke).not.toHaveBeenCalledWith("reset_file", { fileId: mockFile.id });
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(mockFile.id);
+  });
+
+
+  it("hands off to Review with pending feedback when Regenerate Command is clicked", async () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockClear();
+
+    render(() => <DetailModal />);
+
+    const textarea = screen.getByPlaceholderText(
+      "e.g. Use 128k bitrate instead, or add -map_chapters 0..."
+    ) as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: "Use HEVC instead" } });
+    fireEvent.click(screen.getByText("Regenerate Command"));
+
+    expect(detailModalOpen()).toBe(false);
+    expect(reviewModalOpen()).toBe(true);
+    expect(selectedFileId()).toBe(mockFile.id);
+    expect(pendingReviewRegenerateFeedback()).toBe("Use HEVC instead");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("Review generate runs after Detail Regenerate Command handoff", async () => {
+    const mockFile = createMockFile();
     setWorkQueue((q) => ({ ...q, files: [mockFile] }));
     setSelectedFileId(mockFile.id);
     setDetailModalOpen(true);
@@ -381,39 +494,41 @@ describe("DetailModal", () => {
       files: [
         {
           ...mockFile,
-          generated_command: "ffmpeg -i input.mkv new_output.mkv",
-          command_args: "-c:v libx265",
-          description: "Updated description",
-          reasoning: "Updated reasoning",
-          error_message: "",
-          status: "Pending",
-          is_approved: false,
-          updated_at: new Date().toISOString(),
           output_path: "/media/output/Regenerated.mkv",
+          is_approved: false,
+          status: "Pending",
         },
       ],
       created_at: new Date().toISOString(),
       last_modified: new Date().toISOString(),
     });
 
-    render(() => <DetailModal />);
+    render(() => (
+      <>
+        <DetailModal />
+        <ReviewModal />
+      </>
+    ));
 
     const textarea = screen.getByPlaceholderText(
       "e.g. Use 128k bitrate instead, or add -map_chapters 0..."
     ) as HTMLTextAreaElement;
     fireEvent.input(textarea, { target: { value: "Use HEVC instead" } });
-
-    const regenerateButton = screen.getByText("Regenerate Command") as HTMLButtonElement;
-    expect(regenerateButton.disabled).toBe(false);
-    fireEvent.click(regenerateButton);
+    fireEvent.click(screen.getByText("Regenerate Command"));
 
     await waitFor(() => {
-      const files = workQueue().files;
-      const updated = files.find((f) => f.id === mockFile.id)!;
-      expect(updated.output_path).toBe("/media/output/Regenerated.mkv");
-      expect(updated.is_approved).toBe(false);
-      expect(updated.status).toBe("Pending");
+      expect(invoke).toHaveBeenCalledWith("generate_commands", {
+        fileIds: [mockFile.id],
+        feedback: "Use HEVC instead",
+      });
     });
+
+    const updated = workQueue().files.find((f) => f.id === mockFile.id)!;
+    expect(updated.output_path).toBe("/media/output/Regenerated.mkv");
+    expect(updated.is_approved).toBe(false);
+    expect(updated.status).toBe("Pending");
+    expect(reviewModalOpen()).toBe(true);
+    expect(detailModalOpen()).toBe(false);
   });
 
   it("pending_approved_shows_single_Approved_badge_without_chip", () => {

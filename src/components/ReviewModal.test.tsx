@@ -5,12 +5,15 @@ import ConfirmDialog from "./ConfirmDialog";
 import {
   setWorkQueue,
   setSelectedFileId,
+  selectedFileId,
   setReviewModalOpen,
   reviewModalOpen,
   ffprobeRawModalOpen,
   workQueue,
   confirmDialogOpen,
   confirmDialogConfig,
+  setPendingReviewRegenerateFeedback,
+  pendingReviewRegenerateFeedback,
 } from "../stores/appStore";
 import type { VideoFile } from "../types";
 
@@ -65,6 +68,7 @@ function createMockFile(overrides: Partial<VideoFile> = {}): VideoFile {
 describe("ReviewModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setPendingReviewRegenerateFeedback(null);
     setWorkQueue({
       output_folder: "/media/output",
       guidelines: "",
@@ -672,5 +676,127 @@ describe("ReviewModal", () => {
     // Error should be visible in the logs area — but since logs are not rendered in ReviewModal,
     // we verify the modal is still open and no crash occurred.
     expect(reviewModalOpen()).toBe(true);
+  });
+
+  it("auto-regenerates with pendingReviewRegenerateFeedback when Review opens", async () => {
+    const mockFile = createMockFile({
+      generated_command: "ffmpeg -i input.mkv output.mkv",
+      is_approved: false,
+      status: "Pending",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setPendingReviewRegenerateFeedback("Use HEVC instead");
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "generate_commands") {
+        expect(pendingReviewRegenerateFeedback()).toBeNull();
+        return {
+          output_folder: "/media/output",
+          guidelines: "",
+          files: [
+            {
+              ...mockFile,
+              output_path: "/media/output/Regenerated.mkv",
+              is_approved: false,
+            },
+          ],
+          created_at: new Date().toISOString(),
+          last_modified: new Date().toISOString(),
+        };
+      }
+    });
+
+    setReviewModalOpen(true);
+    render(() => <ReviewModal />);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("generate_commands", {
+        fileIds: [mockFile.id],
+        feedback: "Use HEVC instead",
+      });
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(pendingReviewRegenerateFeedback()).toBeNull();
+    expect(reviewModalOpen()).toBe(true);
+    expect(selectedFileId()).toBe(mockFile.id);
+    await waitFor(() => {
+      const updated = workQueue().files.find((f) => f.id === mockFile.id)!;
+      expect(updated.output_path).toBe("/media/output/Regenerated.mkv");
+      expect(updated.is_approved).toBe(false);
+    });
+  });
+
+  it("does not auto-regenerate while Review is closed then generates when it opens", async () => {
+    const mockFile = createMockFile({
+      generated_command: "ffmpeg -i input.mkv output.mkv",
+      is_approved: false,
+      status: "Pending",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setPendingReviewRegenerateFeedback("Use HEVC instead");
+    setReviewModalOpen(false);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "generate_commands") {
+        expect(pendingReviewRegenerateFeedback()).toBeNull();
+        return {
+          output_folder: "/media/output",
+          guidelines: "",
+          files: [
+            {
+              ...mockFile,
+              output_path: "/media/output/Regenerated.mkv",
+              is_approved: false,
+            },
+          ],
+          created_at: new Date().toISOString(),
+          last_modified: new Date().toISOString(),
+        };
+      }
+    });
+
+    render(() => <ReviewModal />);
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      "generate_commands",
+      expect.anything(),
+    );
+    expect(pendingReviewRegenerateFeedback()).toBe("Use HEVC instead");
+
+    setReviewModalOpen(true);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("generate_commands", {
+        fileIds: [mockFile.id],
+        feedback: "Use HEVC instead",
+      });
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(pendingReviewRegenerateFeedback()).toBeNull();
+  });
+
+  it("does not auto-regenerate when pending feedback is null", async () => {
+    const mockFile = createMockFile({
+      generated_command: "ffmpeg -i input.mkv output.mkv",
+      is_approved: false,
+      status: "Pending",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setPendingReviewRegenerateFeedback(null);
+    setReviewModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    render(() => <ReviewModal />);
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      "generate_commands",
+      expect.anything(),
+    );
   });
 });

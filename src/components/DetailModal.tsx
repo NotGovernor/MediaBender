@@ -6,10 +6,11 @@ import {
   detailModalOpen,
   selectedFile,
   closeModals,
+  handoffToReview,
   addLog,
   setConfirmDialogOpen,
   setConfirmDialogConfig,
-  setIsGenerating,
+  setPendingReviewRegenerateFeedback,
   setWorkQueue,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
@@ -49,105 +50,75 @@ export default function DetailModal() {
 
   const handleResetStatus = async () => {
     if (!file()) return;
+    const fileId = file()!.id;
+    const inputPath = file()!.input_path;
     try {
-      const q = await invoke<WorkQueue>("reset_file", { fileId: file()!.id });
+      const q = await invoke<WorkQueue>("reset_file", { fileId });
       setWorkQueue(q);
       addLog({
         timestamp: new Date().toISOString(),
         level: "info",
-        message: `Reset status for: ${file()!.input_path.split(/[/\\]/).pop()}`,
-        file_id: file()!.id,
+        message: `Reset status for: ${inputPath.split(/[/\\]/).pop()}`,
+        file_id: fileId,
       });
-      closeModals();
+      handoffToReview(fileId);
     } catch (err) {
       addLog({
         timestamp: new Date().toISOString(),
         level: "error",
         message: `Reset failed: ${err}`,
-        file_id: file()!.id,
+        file_id: fileId,
       });
     }
   };
 
-  const handleRegenerate = async () => {
+  const handleRegenerate = () => {
     if (!file()) return;
     const fb = feedback().trim();
     if (!fb) return;
-
     const fileId = file()!.id;
-    const inputPath = file()!.input_path;
-
-    closeModals();
-
-    setIsGenerating(true);
-    addLog({
-      timestamp: new Date().toISOString(),
-      level: "info",
-      message: `Regenerating command with feedback for: ${inputPath.split(/[/\\]/).pop()}`,
-      file_id: fileId,
-    });
-
-    try {
-      const q = await invoke<WorkQueue>("generate_commands", {
-        fileIds: [fileId],
-        feedback: fb,
-      });
-      setWorkQueue(q);
-
-      addLog({
-        timestamp: new Date().toISOString(),
-        level: "info",
-        message: `Regeneration complete for: ${inputPath.split(/[/\\]/).pop()}`,
-        file_id: fileId,
-      });
-    } catch (err) {
-      addLog({
-        timestamp: new Date().toISOString(),
-        level: "error",
-        message: `Regeneration failed: ${err}`,
-        file_id: fileId,
-      });
-    } finally {
-      setIsGenerating(false);
-    }
+    setPendingReviewRegenerateFeedback(fb);
+    handoffToReview(fileId);
   };
 
   const handleReprocess = () => {
     if (!file()) return;
+    const fileId = file()!.id;
     const outputPath = file()!.output_path;
+    const inputName = file()!.input_path.split(/[/\\]/).pop();
     setConfirmDialogConfig({
       title: "Delete Output File?",
       message:
-        "The previous output file will be deleted and the item will be re-queued for processing.",
+        "The previous output file will be deleted. You will return to command review. The item will not be processed until you approve.",
       detail: outputPath || "Output path not set",
-      confirmText: "Delete & Reprocess",
+      confirmText: "Delete & Review",
       confirmVariant: "danger",
       onConfirm: async () => {
         try {
           if (outputPath) {
             await invoke("delete_output_file", { outputPath });
           }
-          const q = await invoke<WorkQueue>("reset_file", { fileId: file()!.id });
+          const q = await invoke<WorkQueue>("reset_file", { fileId });
           setWorkQueue(q);
         } catch (err) {
           addLog({
             timestamp: new Date().toISOString(),
             level: "warn",
             message: `Could not delete output file: ${err}`,
-            file_id: file()!.id,
+            file_id: fileId,
           });
           return;
         }
         addLog({
           timestamp: new Date().toISOString(),
           level: "info",
-          message: `Reprocessing: ${file()!.input_path.split(/[/\\]/).pop()}`,
-          file_id: file()!.id,
+          message: `Reprocessing: ${inputName}`,
+          file_id: fileId,
         });
+        handoffToReview(fileId);
       },
     });
     setConfirmDialogOpen(true);
-    closeModals();
   };
 
   return (
