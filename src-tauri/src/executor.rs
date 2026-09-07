@@ -105,19 +105,60 @@ impl ProcessTracker {
 }
 
 /// Kill the child and any descendants. `Child::kill` is TerminateProcess on
-/// Windows and does not walk the tree — a wrapper/stub dying leaves ffmpeg
-/// encoding in the background while the UI thinks Stop finished.
+/// Windows and SIGKILL of one pid on Unix — neither walks the tree. A
+/// wrapper/stub dying leaves ffmpeg encoding in the background while the UI
+/// thinks Stop finished.
 async fn terminate_child(child: &mut tokio::process::Child) {
-    #[cfg(windows)]
     if let Some(pid) = child.id() {
+        kill_process_tree(pid).await;
+    }
+    // Always wait after kill so we never drop a live Child.
+    let _ = child.kill().await;
+}
+
+async fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
         let mut cmd = crate::process_cmd::media_command("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let _ = cmd.status().await;
     }
-    // Always wait after kill so we never drop a live Child.
-    let _ = child.kill().await;
+    #[cfg(unix)]
+    {
+        for child_pid in unix_descendant_pids(pid) {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &child_pid.to_string()])
+                .status();
+        }
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+}
+
+#[cfg(unix)]
+fn unix_descendant_pids(pid: u32) -> Vec<u32> {
+    let mut acc = Vec::new();
+    collect_unix_children(pid, &mut acc);
+    acc
+}
+
+#[cfg(unix)]
+fn collect_unix_children(pid: u32, acc: &mut Vec<u32>) {
+    let Ok(output) = std::process::Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .output()
+    else {
+        return;
+    };
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Ok(child) = line.trim().parse::<u32>() {
+            collect_unix_children(child, acc);
+            acc.push(child);
+        }
+    }
 }
 
 pub struct FFmpegExecutor {
