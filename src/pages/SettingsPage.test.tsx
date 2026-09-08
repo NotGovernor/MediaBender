@@ -243,7 +243,7 @@ describe("SettingsPage Execution max parallel", () => {
     expect(screen.getByText("Max Parallel Jobs:").closest("label")?.textContent).toMatch(
       /Max Parallel Jobs:\s*1/,
     );
-    expect(screen.getByText(/Applies on the next Start/)).toBeTruthy();
+    expect(screen.getByText(/2 is a safe starting point for hardware encoding/i)).toBeTruthy();
     expect(screen.queryByRole("spinbutton")).toBeNull();
   });
 
@@ -261,5 +261,46 @@ describe("SettingsPage Execution max parallel", () => {
     expect(screen.getByText("Max Parallel Jobs:").closest("label")?.textContent).toMatch(
       /Max Parallel Jobs:\s*3/,
     );
+  });
+});
+
+describe("SettingsPage Execution max parallel", () => {
+  beforeEach(() => {
+    setSettings({
+      providers: [],
+      active_provider_index: 0,
+      ffmpeg_path: "",
+      ffprobe_path: "",
+      default_output_folder: "",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+      check_updates_on_startup: true,
+    });
+  });
+
+  it("shows_hardware_encoding_hint_for_max_parallel", () => {
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    expect(
+      screen.getByText(/2 is a safe starting point for hardware encoding/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/session-limit/i)).toBeTruthy();
+  });
+
+  it("saves_settings_immediately_when_max_parallel_changes", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    const input = screen.getByLabelText("Max Parallel Jobs") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "3" } });
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("save_settings", {
+        newSettings: expect.objectContaining({ max_parallel: 3 }),
+      });
+    });
+    expect(settings().max_parallel).toBe(3);
   });
 });

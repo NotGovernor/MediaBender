@@ -161,11 +161,14 @@ async fn fifo_worker(
         if token.is_cancelled() {
             break;
         }
+        let notified = state.notify.notified();
+        tokio::pin!(notified);
         let id = {
             let mut fifo = state.fifo.lock().await;
             fifo.pop_front()
         };
         if let Some(file_id) = id {
+            drop(notified);
             emit_pipeline_event(&app, &state).await;
             let file = {
                 let q = queue.lock().await;
@@ -184,7 +187,7 @@ async fn fifo_worker(
         }
         tokio::select! {
             _ = token.cancelled() => break,
-            _ = state.notify.notified() => {}
+            _ = notified => {}
         }
     }
 }
@@ -203,11 +206,14 @@ async fn fifo_worker_with_job<F, Fut>(
         if token.is_cancelled() {
             break;
         }
+        let notified = state.notify.notified();
+        tokio::pin!(notified);
         let id = {
             let mut fifo = state.fifo.lock().await;
             fifo.pop_front()
         };
         if let Some(file_id) = id {
+            drop(notified);
             job(file_id.clone()).await;
             {
                 let mut fifo = state.fifo.lock().await;
@@ -218,7 +224,7 @@ async fn fifo_worker_with_job<F, Fut>(
         }
         tokio::select! {
             _ = token.cancelled() => break,
-            _ = state.notify.notified() => {}
+            _ = notified => {}
         }
     }
 }
@@ -236,8 +242,40 @@ pub async fn stop_fifo(
         let mut fifo = job_fifo.fifo.lock().await;
         fifo.clear_pending();
     }
-    job_fifo.workers_spawned.store(false, Ordering::SeqCst);
+    // Wait out an in-flight claim/spawn (ensure_workers holds executor_tx across CAS).
+    let _tx = job_fifo.executor_tx.lock().await;
+    job_fifo.workers_live.store(0, Ordering::SeqCst);
     job_fifo.notify.notify_waiters();
+}
+
+fn claim_worker_deficit(live: &std::sync::atomic::AtomicUsize, desired: usize) -> usize {
+    loop {
+        let current = live.load(Ordering::SeqCst);
+        if current >= desired {
+            return 0;
+        }
+        if live
+            .compare_exchange(current, desired, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return desired - current;
+        }
+    }
+}
+
+fn claim_worker_deficit_if_live(
+    live: &std::sync::atomic::AtomicUsize,
+    desired: usize,
+    token: &tokio_util::sync::CancellationToken,
+) -> usize {
+    let to_spawn = claim_worker_deficit(live, desired);
+    if token.is_cancelled() {
+        // Session is stopping. Zero live while the caller still holds current_token
+        // so a new session cannot have claimed yet.
+        live.store(0, Ordering::SeqCst);
+        return 0;
+    }
+    to_spawn
 }
 
 pub async fn ensure_workers(
@@ -256,33 +294,28 @@ pub async fn ensure_workers(
         tracker.arm();
         let t = tokio_util::sync::CancellationToken::new();
         *token_slot = Some(t);
-        job_fifo.workers_spawned.store(false, Ordering::SeqCst);
+        job_fifo.workers_live.store(0, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<ExecutorEvent>(100);
         spawn_executor_event_receiver(rx, app.clone(), queue.clone(), store);
         *job_fifo.executor_tx.lock().await = Some(tx);
     }
     let token = token_slot.as_ref().unwrap().clone();
-    drop(token_slot);
 
-    if !job_fifo.workers_spawned.swap(true, Ordering::SeqCst) {
-        let tx = job_fifo
-            .executor_tx
-            .lock()
-            .await
-            .clone()
-            .expect("executor_tx must be set for a live session");
-        for _ in 0..max_parallel.max(1) {
-            let state = job_fifo.clone();
-            let token = token.clone();
-            let app = app.clone();
-            let queue = queue.clone();
-            let tracker = tracker.clone();
-            let ffmpeg_path = ffmpeg_path.clone();
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                fifo_worker(state, token, app, queue, tracker, ffmpeg_path, tx).await;
-            });
-        }
+    let desired = max_parallel.max(1);
+    let tx_slot = job_fifo.executor_tx.lock().await;
+    let tx = tx_slot.clone().expect("executor_tx must be set for a live session");
+    let to_spawn = claim_worker_deficit_if_live(&job_fifo.workers_live, desired, &token);
+    for _ in 0..to_spawn {
+        let state = job_fifo.clone();
+        let token = token.clone();
+        let app = app.clone();
+        let queue = queue.clone();
+        let tracker = tracker.clone();
+        let ffmpeg_path = ffmpeg_path.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            fifo_worker(state, token, app, queue, tracker, ffmpeg_path, tx).await;
+        });
     }
     job_fifo.notify.notify_waiters();
 }
@@ -391,34 +424,33 @@ mod tests {
             *slot = Some(Arc::new(tokio_util::sync::CancellationToken::new()));
             harness
                 .state
-                .workers_spawned
-                .store(false, Ordering::SeqCst);
+                .workers_live
+                .store(0, Ordering::SeqCst);
         }
         let token = slot.as_ref().unwrap().clone();
-        drop(slot);
 
-        if !harness.state.workers_spawned.swap(true, Ordering::SeqCst) {
-            for _ in 0..max_parallel.max(1) {
-                let state = harness.state.clone();
-                let token = (*token).clone();
-                let started = harness.started.clone();
-                let hold = hold.clone();
-                tokio::spawn(async move {
-                    fifo_worker_with_job(state, token, move |file_id| {
-                        let started = started.clone();
-                        let hold = hold.clone();
-                        async move {
-                            started.lock().await.push(file_id);
-                            if let Some(ref hold) = hold {
-                                hold.wait().await;
-                            } else {
-                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                            }
+        let desired = max_parallel.max(1);
+        let to_spawn = claim_worker_deficit_if_live(&harness.state.workers_live, desired, token.as_ref());
+        for _ in 0..to_spawn {
+            let state = harness.state.clone();
+            let token = (*token).clone();
+            let started = harness.started.clone();
+            let hold = hold.clone();
+            tokio::spawn(async move {
+                fifo_worker_with_job(state, token, move |file_id| {
+                    let started = started.clone();
+                    let hold = hold.clone();
+                    async move {
+                        started.lock().await.push(file_id);
+                        if let Some(ref hold) = hold {
+                            hold.wait().await;
+                        } else {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
-                    })
-                    .await;
-                });
-            }
+                    }
+                })
+                .await;
+            });
         }
         harness.state.notify.notify_waiters();
     }
@@ -469,6 +501,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fifo_workers_run_two_jobs_concurrently_when_max_parallel_2() {
+        let h = FifoFakeHarness::new();
+        let hold = HoldGate::new();
+        spawn_fifo_fake_workers(&h, 2, Some(hold.clone())).await;
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["a".into(), "b".into(), "c".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_started_contains("a").await;
+        h.wait_started_contains("b").await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let started = h.started_ids().await;
+        assert!(started.contains(&"a".to_string()));
+        assert!(started.contains(&"b".to_string()));
+        assert!(!started.contains(&"c".to_string()), "third job must wait for a slot");
+        assert_eq!(started.len(), 2);
+
+        hold.release();
+        h.wait_idle().await;
+        let done = h.started_ids().await;
+        assert_eq!(done.len(), 3);
+        assert!(done.contains(&"c".to_string()));
+    }
+
+    #[tokio::test]
+    async fn add_while_slot_free_starts_immediately() {
+        let h = FifoFakeHarness::new();
+        let hold = HoldGate::new();
+        spawn_fifo_fake_workers(&h, 3, Some(hold.clone())).await;
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["a".into(), "b".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_started_contains("a").await;
+        h.wait_started_contains("b").await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(h.started_ids().await.len(), 2);
+
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["c".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_started_contains("c").await;
+        assert_eq!(h.started_ids().await.len(), 3, "c must start on the idle worker without waiting for a or b");
+
+        hold.release();
+        h.wait_idle().await;
+    }
+
+    #[tokio::test]
     async fn second_enqueue_appends_without_new_session() {
         let h = FifoFakeHarness::new();
         run_fifo_with_fake_job(&h, 1).await;
@@ -504,6 +589,53 @@ mod tests {
         h.wait_idle().await;
         let order = h.started_ids().await;
         assert_eq!(order.first().map(String::as_str), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn ensure_workers_scales_up_without_stopping_in_flight() {
+        let h = FifoFakeHarness::new();
+        let hold = HoldGate::new();
+        spawn_fifo_fake_workers(&h, 1, Some(hold.clone())).await;
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["a".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_started_contains("a").await;
+
+        spawn_fifo_fake_workers(&h, 3, Some(hold.clone())).await;
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["b".into(), "c".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_started_contains("b").await;
+        h.wait_started_contains("c").await;
+        let started = h.started_ids().await;
+        assert_eq!(started.len(), 3, "a must still be in-flight; b and c must have started on new workers");
+        assert_eq!(h.state.workers_live.load(Ordering::SeqCst), 3);
+
+        hold.release();
+        h.wait_idle().await;
+    }
+
+    #[tokio::test]
+    async fn ensure_workers_does_not_scale_down_live_count() {
+        let h = FifoFakeHarness::new();
+        spawn_fifo_fake_workers(&h, 3, None).await;
+        assert_eq!(h.state.workers_live.load(Ordering::SeqCst), 3);
+        spawn_fifo_fake_workers(&h, 1, None).await;
+        assert_eq!(h.state.workers_live.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn cancelled_session_does_not_keep_worker_deficit_claim() {
+        let live = std::sync::atomic::AtomicUsize::new(0);
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let to_spawn = claim_worker_deficit_if_live(&live, 3, &token);
+        assert_eq!(to_spawn, 0);
+        assert_eq!(live.load(Ordering::SeqCst), 0);
     }
 
     #[test]

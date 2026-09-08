@@ -151,6 +151,7 @@ export default function TopBar() {
     });
 
     try {
+      await invoke("save_settings", { newSettings: s });
       await invoke("start_processing", {
         fileIds: addableIds,
         ffmpegPath: s.ffmpeg_path,

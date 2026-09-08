@@ -58,7 +58,7 @@ impl JobFifo {
 pub struct JobFifoState {
     pub fifo: tokio::sync::Mutex<JobFifo>,
     pub notify: tokio::sync::Notify,
-    pub workers_spawned: std::sync::atomic::AtomicBool,
+    pub workers_live: std::sync::atomic::AtomicUsize,
     pub executor_tx: tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ExecutorEvent>>>,
 }
 
@@ -67,7 +67,7 @@ impl JobFifoState {
         Self {
             fifo: tokio::sync::Mutex::new(JobFifo::new()),
             notify: tokio::sync::Notify::new(),
-            workers_spawned: std::sync::atomic::AtomicBool::new(false),
+            workers_live: std::sync::atomic::AtomicUsize::new(0),
             executor_tx: tokio::sync::Mutex::new(None),
         }
     }

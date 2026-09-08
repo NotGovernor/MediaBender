@@ -382,12 +382,13 @@ export default function SettingsPage() {
                   step="1"
                   aria-label="Max Parallel Jobs"
                   value={clampMaxParallel(settings().max_parallel)}
-                  onInput={(e) =>
-                    setSettings((s) => ({
-                      ...s,
-                      max_parallel: clampMaxParallel(parseInt(e.currentTarget.value, 10)),
-                    }))
-                  }
+                  onInput={(e) => {
+                    const max_parallel = clampMaxParallel(parseInt(e.currentTarget.value, 10));
+                    setSettings((s) => ({ ...s, max_parallel }));
+                    void invoke("save_settings", {
+                      newSettings: { ...settings(), max_parallel },
+                    });
+                  }}
                   class="max-parallel-slider flex-1"
                 />
               </div>
@@ -395,7 +396,7 @@ export default function SettingsPage() {
                 <span>1</span><span>2</span><span>3</span><span>4</span>
               </div>
               <p class="text-xs text-text-muted mt-1">
-                Number of files to process simultaneously (1 = sequential). Applies on the next Start.
+                Number of files to process simultaneously (1 = sequential). 2 is a safe starting point for hardware encoding; drop to 1 if you hit session-limit errors.
               </p>
             </div>
 

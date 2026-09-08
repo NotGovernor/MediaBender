@@ -179,6 +179,32 @@ mod tests {
         let s: AppSettings = serde_json::from_str(json).unwrap();
         assert!(!s.check_updates_on_startup);
     }
+
+    #[test]
+    fn max_parallel_workers_clamps_to_1_and_8() {
+        let mut s = crate::defaults::default_settings();
+        s.max_parallel = 0;
+        assert_eq!(s.max_parallel_workers(), 1);
+        s.max_parallel = -3;
+        assert_eq!(s.max_parallel_workers(), 1);
+        s.max_parallel = 3;
+        assert_eq!(s.max_parallel_workers(), 3);
+        s.max_parallel = 8;
+        assert_eq!(s.max_parallel_workers(), 8);
+        s.max_parallel = 99;
+        assert_eq!(s.max_parallel_workers(), 8);
+    }
+
+    #[test]
+    fn clamp_max_parallel_mutates_field() {
+        let mut s = crate::defaults::default_settings();
+        s.max_parallel = 0;
+        s.clamp_max_parallel();
+        assert_eq!(s.max_parallel, 1);
+        s.max_parallel = 99;
+        s.clamp_max_parallel();
+        assert_eq!(s.max_parallel, 8);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -237,6 +263,19 @@ pub struct AppSettings {
     pub max_parallel: i32,
     #[serde(default = "default_check_updates_on_startup")]
     pub check_updates_on_startup: bool,
+}
+
+impl AppSettings {
+    pub const MIN_PARALLEL: i32 = 1;
+    pub const MAX_PARALLEL: i32 = 8;
+
+    pub fn clamp_max_parallel(&mut self) {
+        self.max_parallel = self.max_parallel.clamp(Self::MIN_PARALLEL, Self::MAX_PARALLEL);
+    }
+
+    pub fn max_parallel_workers(&self) -> usize {
+        self.max_parallel.clamp(Self::MIN_PARALLEL, Self::MAX_PARALLEL) as usize
+    }
 }
 
 fn default_check_updates_on_startup() -> bool {

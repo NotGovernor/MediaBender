@@ -4,6 +4,7 @@ import TopBar from "./TopBar";
 import {
   setWorkQueue,
   setSettings,
+  settings,
   workQueue,
   isProcessing,
   clearGeneratingIds,
@@ -413,16 +414,24 @@ describe("TopBar", () => {
     setWorkQueue((q) => ({ ...q, files: [pendingApproved, pendingNo, completedApproved] }));
 
     const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    const cmds: string[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      cmds.push(cmd);
+      return undefined;
+    });
 
     render(() => <TopBar />);
     fireEvent.click(screen.getByRole("button", { name: /Start Processing/ }));
 
     await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("start_processing", expect.objectContaining({
-        fileIds: ["a"],
-      }));
+      expect(cmds).toEqual(["save_settings", "start_processing"]);
     });
+    expect(invoke).toHaveBeenCalledWith("save_settings", {
+      newSettings: expect.objectContaining({ max_parallel: settings().max_parallel }),
+    });
+    expect(invoke).toHaveBeenCalledWith("start_processing", expect.objectContaining({
+      fileIds: ["a"],
+    }));
   });
 
   it("shows_Add_to_Queue_count_excluding_scheduled_ids", () => {
@@ -505,15 +514,23 @@ describe("TopBar", () => {
     setScheduledIds(["a"]);
 
     const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    const cmds: string[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      cmds.push(cmd);
+      return undefined;
+    });
 
     render(() => <TopBar />);
     fireEvent.click(screen.getByRole("button", { name: /Add to Queue/ }));
 
     await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("start_processing", expect.objectContaining({
-        fileIds: ["b"],
-      }));
+      expect(cmds).toEqual(["save_settings", "start_processing"]);
     });
+    expect(invoke).toHaveBeenCalledWith("save_settings", {
+      newSettings: expect.objectContaining({ max_parallel: settings().max_parallel }),
+    });
+    expect(invoke).toHaveBeenCalledWith("start_processing", expect.objectContaining({
+      fileIds: ["b"],
+    }));
   });
 });
