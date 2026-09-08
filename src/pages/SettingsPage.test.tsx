@@ -1,7 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
 import SettingsPage from "./SettingsPage";
-import { setSettings, settings, setAppVersion, setAvailableUpdateVersion } from "../stores/appStore";
+import {
+  setSettings,
+  settings,
+  setAppVersion,
+  setAvailableUpdateVersion,
+  setUpdateCheckPhase,
+  setUpdateCheckError,
+} from "../stores/appStore";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -149,6 +156,8 @@ describe("SettingsPage Execution updates", () => {
     });
     setAppVersion("");
     setAvailableUpdateVersion(null);
+    setUpdateCheckPhase("idle");
+    setUpdateCheckError("");
   });
 
   it("execution_tab_shows_updates_toggle", () => {
@@ -162,5 +171,95 @@ describe("SettingsPage Execution updates", () => {
     expect(toggle).toBeTruthy();
     fireEvent.click(toggle);
     expect(settings().check_updates_on_startup).toBe(false);
+  });
+
+  it("execution_tab_does_not_claim_up_to_date_before_a_check", () => {
+    setAppVersion("0.5.1");
+    setUpdateCheckPhase("idle");
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    expect(screen.getByText("Current version: v0.5.1")).toBeTruthy();
+    expect(screen.queryByText("Up to date")).toBeNull();
+  });
+
+  it("execution_tab_shows_up_to_date_after_current_phase", () => {
+    setAppVersion("0.5.1");
+    setUpdateCheckPhase("current");
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    expect(screen.getByText("Up to date")).toBeTruthy();
+  });
+
+  it("execution_tab_shows_dev_skip_and_error_copy", () => {
+    setUpdateCheckPhase("skipped_dev");
+    const { unmount } = render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    expect(screen.getByText("Update checks are skipped in development")).toBeTruthy();
+    unmount();
+
+    setUpdateCheckPhase("error");
+    setUpdateCheckError("boom");
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    expect(screen.getByText("Update check failed: boom")).toBeTruthy();
+  });
+
+  it("execution_tab_check_button_disables_while_checking", () => {
+    setUpdateCheckPhase("checking");
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    const btn = screen.getByRole("button", { name: /Check for updates/i });
+    expect(btn).toHaveProperty("disabled", true);
+  });
+});
+
+describe("SettingsPage Execution max parallel", () => {
+  beforeEach(() => {
+    setSettings({
+      providers: [],
+      active_provider_index: 0,
+      ffmpeg_path: "",
+      ffprobe_path: "",
+      default_output_folder: "",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+      check_updates_on_startup: true,
+    });
+    setAppVersion("");
+    setAvailableUpdateVersion(null);
+  });
+
+  it("execution_tab_max_parallel_is_range_1_to_4", () => {
+    setSettings({ ...settings(), max_parallel: 1 });
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    const slider = screen.getByLabelText("Max Parallel Jobs") as HTMLInputElement;
+    expect(slider.type).toBe("range");
+    expect(slider.min).toBe("1");
+    expect(slider.max).toBe("4");
+    expect(slider.step).toBe("1");
+    expect(slider.value).toBe("1");
+    expect(screen.getByText("Max Parallel Jobs:")).toBeTruthy();
+    expect(screen.getByText("Max Parallel Jobs:").closest("label")?.textContent).toMatch(
+      /Max Parallel Jobs:\s*1/,
+    );
+    expect(screen.getByText(/Applies on the next Start/)).toBeTruthy();
+    expect(screen.queryByRole("spinbutton")).toBeNull();
+  });
+
+  it("execution_tab_slider_writes_integer_and_clamps_display", () => {
+    setSettings({ ...settings(), max_parallel: 8 });
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("Execution"));
+    const slider = screen.getByLabelText("Max Parallel Jobs") as HTMLInputElement;
+    expect(slider.value).toBe("4");
+    expect(screen.getByText("Max Parallel Jobs:").closest("label")?.textContent).toMatch(
+      /Max Parallel Jobs:\s*4/,
+    );
+    fireEvent.input(slider, { target: { value: "3" } });
+    expect(settings().max_parallel).toBe(3);
+    expect(screen.getByText("Max Parallel Jobs:").closest("label")?.textContent).toMatch(
+      /Max Parallel Jobs:\s*3/,
+    );
   });
 });

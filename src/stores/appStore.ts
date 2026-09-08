@@ -1,5 +1,6 @@
 import { createSignal, createMemo } from "solid-js";
 import type { VideoFile, WorkQueue, AppSettings, View, LogEntry } from "../types";
+import type { UpdateCheckPhase } from "../lib/updates";
 import { dedupeFiles } from "../lib/dedupeFiles";
 
 // ── View ──
@@ -125,6 +126,9 @@ export const [updateProgress, setUpdateProgress] = createSignal("");
 export const [updateError, setUpdateError] = createSignal("");
 export const [appVersion, setAppVersion] = createSignal("");
 export const [availableUpdateVersion, setAvailableUpdateVersion] = createSignal<string | null>(null);
+export const [updateCheckPhase, setUpdateCheckPhase] =
+  createSignal<UpdateCheckPhase>("idle");
+export const [updateCheckError, setUpdateCheckError] = createSignal("");
 
 export function openReview(fileId: string) {
   setSelectedFileId(fileId);

@@ -1,9 +1,10 @@
 import { For, Index, Show, createSignal, createEffect } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { settings, setSettings, appVersion, availableUpdateVersion } from "../stores/appStore";
+import { settings, setSettings, appVersion, availableUpdateVersion, updateCheckPhase, updateCheckError } from "../stores/appStore";
 import { formatAvailableNote } from "../lib/updates";
 import { openDownloadPage, performCheck } from "../lib/updateSession";
 import type { AIProviderConfig, AppSettings } from "../types";
+import { clampMaxParallel } from "../lib/clampMaxParallel";
 
 function getProviderTitle(provider: AIProviderConfig): string {
   let domain = "";
@@ -366,28 +367,54 @@ export default function SettingsPage() {
         {activeTab() === "execution" && (
           <div class="space-y-5 max-w-2xl">
             <div>
-              <label class="block text-xs font-medium text-text-muted mb-1">Max Parallel Jobs</label>
-              <input
-                type="number"
-                min="1"
-                max="8"
-                value={settings().max_parallel}
-                onInput={(e) => setSettings((s) => ({ ...s, max_parallel: parseInt(e.currentTarget.value) || 1 }))}
-                class="w-full bg-bg-tertiary border border-border rounded px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-gold/50"
-              />
-              <p class="text-xs text-text-muted mt-1">Number of files to process simultaneously (1 = sequential)</p>
+              <label class="block text-xs font-medium text-text-muted mb-1" for="max-parallel">
+                Max Parallel Jobs:{" "}
+                <span class="text-text-primary tabular-nums">
+                  {clampMaxParallel(settings().max_parallel)}
+                </span>
+              </label>
+              <div class="flex items-center gap-3">
+                <input
+                  id="max-parallel"
+                  type="range"
+                  min="1"
+                  max="4"
+                  step="1"
+                  aria-label="Max Parallel Jobs"
+                  value={clampMaxParallel(settings().max_parallel)}
+                  onInput={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      max_parallel: clampMaxParallel(parseInt(e.currentTarget.value, 10)),
+                    }))
+                  }
+                  class="max-parallel-slider flex-1"
+                />
+              </div>
+              <div class="flex justify-between text-xs text-text-muted mt-1 px-0.5">
+                <span>1</span><span>2</span><span>3</span><span>4</span>
+              </div>
+              <p class="text-xs text-text-muted mt-1">
+                Number of files to process simultaneously (1 = sequential). Applies on the next Start.
+              </p>
             </div>
 
             <div>
               <label class="block text-xs font-medium text-text-muted mb-1">Updates</label>
               <p class="text-sm text-text-primary">Current version: v{appVersion()}</p>
-              <Show
-                when={availableUpdateVersion()}
-                fallback={<p class="text-sm text-text-muted">Up to date</p>}
-              >
+              <Show when={availableUpdateVersion()}>
                 {(version) => (
                   <p class="text-sm text-gold">{formatAvailableNote(version())}</p>
                 )}
+              </Show>
+              <Show when={!availableUpdateVersion() && updateCheckPhase() === "current"}>
+                <p class="text-sm text-text-muted">Up to date</p>
+              </Show>
+              <Show when={!availableUpdateVersion() && updateCheckPhase() === "skipped_dev"}>
+                <p class="text-sm text-text-muted">Update checks are skipped in development</p>
+              </Show>
+              <Show when={!availableUpdateVersion() && updateCheckPhase() === "error"}>
+                <p class="text-sm text-danger">Update check failed: {updateCheckError()}</p>
               </Show>
               <label class="flex items-center gap-2 mt-3">
                 <input
@@ -407,8 +434,12 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => performCheck({ silent: false })}
-                  class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors"
+                  disabled={updateCheckPhase() === "checking"}
+                  class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
+                  {updateCheckPhase() === "checking" && (
+                    <span class="inline-block w-3.5 h-3.5 border-2 border-gold border-t-transparent rounded-full animate-spin" />
+                  )}
                   Check for updates
                 </button>
                 <button

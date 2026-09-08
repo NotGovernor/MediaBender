@@ -19,7 +19,10 @@ mod interview_ops;
 use models::*;
 use app_startup::{AppState, build_app_state};
 use persistence::{JsonFileStore, Persistence};
-use settings_ops::verify_ffmpeg_paths as verify_ffmpeg_paths_impl;
+use settings_ops::{
+    clamp_max_parallel, clamp_settings_max_parallel,
+    verify_ffmpeg_paths as verify_ffmpeg_paths_impl,
+};
 use queue_ops::{
     add_files as add_files_impl, add_folder as add_folder_impl, add_paths as add_paths_impl,
     apply_command_template as apply_command_template_impl, approve_file as approve_file_impl,
@@ -228,7 +231,10 @@ async fn apply_command_template(
 }
 
 #[tauri::command] async fn start_processing(file_ids: Vec<String>, ffmpeg_path: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
-    let max_parallel = { let s = state.settings.lock().await; s.max_parallel.max(1) as usize };
+    let max_parallel = {
+        let s = state.settings.lock().await;
+        clamp_max_parallel(s.max_parallel) as usize
+    };
     let already_scheduled: std::collections::HashSet<String> = {
         let fifo = state.job_fifo.fifo.lock().await;
         fifo.scheduled_ids().into_iter().collect()
@@ -280,7 +286,10 @@ async fn reprocess_file(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<WorkQueue, String> {
-    let max_parallel = { state.settings.lock().await.max_parallel.max(1) as usize };
+    let max_parallel = {
+        let s = state.settings.lock().await;
+        clamp_max_parallel(s.max_parallel) as usize
+    };
     {
         let fifo = state.job_fifo.fifo.lock().await;
         if fifo.is_running(&file_id) {
@@ -349,7 +358,8 @@ fn output_file_exists(output_path: String) -> bool {
     Ok(settings.clone())
 }
 
-#[tauri::command] async fn save_settings(new_settings: AppSettings, state: tauri::State<'_, AppState>) -> Result<(), String> {
+#[tauri::command] async fn save_settings(mut new_settings: AppSettings, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    clamp_settings_max_parallel(&mut new_settings);
     state.store.save_settings(&new_settings)?;
     let mut settings = state.settings.lock().await;
     *settings = new_settings;

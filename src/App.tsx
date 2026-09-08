@@ -50,6 +50,7 @@ import {
   applyFileDrop,
 } from "./lib/fileDrop";
 import { scanPendingAfterAdd } from "./lib/scanPendingAfterAdd";
+import { clampMaxParallel } from "./lib/clampMaxParallel";
 import { applyGenerateEvent } from "./lib/applyGenerateEvent";
 import type { AddPathsResult, AppSettings, VideoFile, WorkQueue } from "./types";
 
@@ -284,7 +285,10 @@ export default function App() {
 
     try {
       const loadedSettings = await invoke<AppSettings>("load_settings");
-      setSettings(loadedSettings);
+      setSettings({
+        ...loadedSettings,
+        max_parallel: clampMaxParallel(loadedSettings.max_parallel),
+      });
     } catch (err) {
       addLog({
         timestamp: new Date().toISOString(),

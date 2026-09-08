@@ -30,3 +30,75 @@ export async function runUpdateCheck(deps: {
     return null; // launch path treats errors as "no update"
   }
 }
+
+export type UpdateCheckPhase = "idle" | "checking" | "current" | "skipped_dev" | "error";
+
+export function canStartUpdateCheck(phase: UpdateCheckPhase): boolean {
+  return phase !== "checking";
+}
+
+export function outcomeAfterCheck(opts: {
+  isDev: boolean;
+  silent: boolean;
+  errorMessage: string | null;
+  foundVersion: string | null;
+}): {
+  phase: UpdateCheckPhase;
+  errorMessage: string;
+  availableVersion: string | null;
+  openDialog: boolean;
+  skipNetwork: boolean;
+} {
+  if (opts.isDev) {
+    if (opts.silent) {
+      return {
+        phase: "idle",
+        errorMessage: "",
+        availableVersion: null,
+        openDialog: false,
+        skipNetwork: true,
+      };
+    }
+    return {
+      phase: "skipped_dev",
+      errorMessage: "",
+      availableVersion: null,
+      openDialog: false,
+      skipNetwork: true,
+    };
+  }
+  if (opts.errorMessage) {
+    if (opts.silent) {
+      return {
+        phase: "idle",
+        errorMessage: "",
+        availableVersion: null,
+        openDialog: false,
+        skipNetwork: false,
+      };
+    }
+    return {
+      phase: "error",
+      errorMessage: opts.errorMessage,
+      availableVersion: null,
+      openDialog: false,
+      skipNetwork: false,
+    };
+  }
+  if (opts.foundVersion) {
+    return {
+      phase: "idle",
+      errorMessage: "",
+      availableVersion: opts.foundVersion,
+      openDialog: !opts.silent,
+      skipNetwork: false,
+    };
+  }
+  return {
+    phase: "current",
+    errorMessage: "",
+    availableVersion: null,
+    openDialog: false,
+    skipNetwork: false,
+  };
+}

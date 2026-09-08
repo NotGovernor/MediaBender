@@ -59,4 +59,30 @@
   ::-webkit-scrollbar-thumb:hover {
     background: var(--color-text-muted);
   }
+
+  .max-parallel-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+  }
+  .max-parallel-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--color-gold);
+    cursor: pointer;
+    border: none;
+  }
+  .max-parallel-slider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--color-gold);
+    cursor: pointer;
+    border: none;
+  }
 }

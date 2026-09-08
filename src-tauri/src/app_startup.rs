@@ -43,6 +43,7 @@ pub fn build_app_state() -> AppState {
         let _ = store.save_queue(&queue);
     }
     let mut settings = store.load_settings().unwrap_or_else(|| default_settings());
+    crate::settings_ops::clamp_settings_max_parallel(&mut settings);
 
     // Auto-discover FFmpeg/FFprobe on startup if paths are empty
     if settings.ffmpeg_path.is_empty() {

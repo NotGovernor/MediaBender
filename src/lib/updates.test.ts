@@ -4,6 +4,8 @@ import {
   shouldCheckOnLaunch,
   formatAvailableNote,
   runUpdateCheck,
+  outcomeAfterCheck,
+  canStartUpdateCheck,
 } from "./updates";
 
 describe("isQueueBlockingUpdate", () => {
@@ -84,5 +86,96 @@ describe("runUpdateCheck", () => {
       },
     });
     expect(result).toBeNull();
+  });
+});
+
+describe("outcomeAfterCheck", () => {
+  it("manual dev skip does not open a dialog", () => {
+    expect(outcomeAfterCheck({ isDev: true, silent: false, errorMessage: null, foundVersion: null })).toEqual({
+      phase: "skipped_dev",
+      errorMessage: "",
+      availableVersion: null,
+      openDialog: false,
+      skipNetwork: true,
+    });
+  });
+
+  it("silent dev does not paint skip or error", () => {
+    expect(outcomeAfterCheck({ isDev: true, silent: true, errorMessage: null, foundVersion: null })).toEqual({
+      phase: "idle",
+      errorMessage: "",
+      availableVersion: null,
+      openDialog: false,
+      skipNetwork: true,
+    });
+  });
+
+  it("silent network error stays idle", () => {
+    expect(
+      outcomeAfterCheck({ isDev: false, silent: true, errorMessage: "net", foundVersion: null }),
+    ).toEqual({
+      phase: "idle",
+      errorMessage: "",
+      availableVersion: null,
+      openDialog: false,
+      skipNetwork: false,
+    });
+  });
+
+  it("manual network error paints error", () => {
+    expect(
+      outcomeAfterCheck({ isDev: false, silent: false, errorMessage: "net", foundVersion: null }),
+    ).toEqual({
+      phase: "error",
+      errorMessage: "net",
+      availableVersion: null,
+      openDialog: false,
+      skipNetwork: false,
+    });
+  });
+
+  it("success without update is current for silent and manual", () => {
+    const expected = {
+      phase: "current",
+      errorMessage: "",
+      availableVersion: null,
+      openDialog: false,
+      skipNetwork: false,
+    };
+    expect(
+      outcomeAfterCheck({ isDev: false, silent: true, errorMessage: null, foundVersion: null }),
+    ).toEqual(expected);
+    expect(
+      outcomeAfterCheck({ isDev: false, silent: false, errorMessage: null, foundVersion: null }),
+    ).toEqual(expected);
+  });
+
+  it("found update opens dialog only when not silent", () => {
+    expect(
+      outcomeAfterCheck({ isDev: false, silent: false, errorMessage: null, foundVersion: "0.5.2" }),
+    ).toEqual({
+      phase: "idle",
+      errorMessage: "",
+      availableVersion: "0.5.2",
+      openDialog: true,
+      skipNetwork: false,
+    });
+    expect(
+      outcomeAfterCheck({ isDev: false, silent: true, errorMessage: null, foundVersion: "0.5.2" }),
+    ).toEqual({
+      phase: "idle",
+      errorMessage: "",
+      availableVersion: "0.5.2",
+      openDialog: false,
+      skipNetwork: false,
+    });
+  });
+
+  it("canStartUpdateCheck is false only while checking", () => {
+    expect(canStartUpdateCheck("checking")).toBe(false);
+    expect(canStartUpdateCheck("idle")).toBe(true);
+    expect(canStartUpdateCheck("current")).toBe(true);
+    expect(canStartUpdateCheck("error")).toBe(true);
+    expect(canStartUpdateCheck("skipped_dev")).toBe(true);
   });
 });

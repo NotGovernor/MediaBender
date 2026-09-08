@@ -1,6 +1,7 @@
 import type { Update } from "@tauri-apps/plugin-updater";
 import { check } from "@tauri-apps/plugin-updater";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { canStartUpdateCheck, outcomeAfterCheck } from "./updates";
 import {
   addLog,
   appVersion,
@@ -10,6 +11,9 @@ import {
   setUpdateDialogPhase,
   setUpdateError,
   updateDialogPhase,
+  updateCheckPhase,
+  setUpdateCheckPhase,
+  setUpdateCheckError,
 } from "../stores/appStore";
 
 let lastUpdate: Update | null = null;
@@ -23,7 +27,20 @@ export function getLastUpdate(): Update | null {
 }
 
 export async function performCheck(opts: { silent: boolean }) {
-  if (import.meta.env.DEV) {
+  if (!canStartUpdateCheck(updateCheckPhase())) return;
+
+  setUpdateCheckPhase("checking");
+  setUpdateCheckError("");
+
+  const finishDev = () => {
+    const out = outcomeAfterCheck({
+      isDev: true,
+      silent: opts.silent,
+      errorMessage: null,
+      foundVersion: null,
+    });
+    setUpdateCheckPhase(out.phase);
+    setUpdateCheckError(out.errorMessage);
     if (!opts.silent) {
       addLog({
         timestamp: new Date().toISOString(),
@@ -31,32 +48,49 @@ export async function performCheck(opts: { silent: boolean }) {
         message: "Skipping update check in dev",
       });
     }
+  };
+
+  if (import.meta.env.DEV) {
+    finishDev();
     return;
   }
 
   try {
     const result = await check();
     setLastUpdate(result);
-    if (!result) {
-      setAvailableUpdateVersion(null);
-      if (!opts.silent) {
-        addLog({
-          timestamp: new Date().toISOString(),
-          level: "info",
-          message: `You're on the latest version (v${appVersion()}).`,
-        });
-      }
-      return;
+    const out = outcomeAfterCheck({
+      isDev: false,
+      silent: opts.silent,
+      errorMessage: null,
+      foundVersion: result ? result.version : null,
+    });
+    setUpdateCheckPhase(out.phase);
+    setUpdateCheckError(out.errorMessage);
+    setAvailableUpdateVersion(out.availableVersion);
+    if (result && out.availableVersion) {
+      setUpdateTargetVersion(result.version);
+      setUpdateNotes(result.body ?? "");
     }
-
-    setAvailableUpdateVersion(result.version);
-    setUpdateTargetVersion(result.version);
-    setUpdateNotes(result.body ?? "");
-    if (!opts.silent) {
+    if (out.openDialog) {
       setUpdateDialogPhase("confirm");
+    }
+    if (!result && !opts.silent) {
+      addLog({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        message: `You're on the latest version (v${appVersion()}).`,
+      });
     }
   } catch (err) {
     setLastUpdate(null);
+    const out = outcomeAfterCheck({
+      isDev: false,
+      silent: opts.silent,
+      errorMessage: String(err),
+      foundVersion: null,
+    });
+    setUpdateCheckPhase(out.phase);
+    setUpdateCheckError(out.errorMessage);
     if (opts.silent) {
       addLog({
         timestamp: new Date().toISOString(),
