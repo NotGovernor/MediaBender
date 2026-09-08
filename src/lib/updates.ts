@@ -14,7 +14,7 @@ export function shouldCheckOnLaunch(opts: {
 
 export function formatAvailableNote(version: string): string {
   const v = version.startsWith("v") ? version : `v${version}`;
-  return `${v} available`;
+  return `${v} upgrade available`;
 }
 
 export type UpdateInfo = { version: string; notes: string };

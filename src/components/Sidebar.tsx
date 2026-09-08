@@ -54,8 +54,12 @@ export default function Sidebar(props: { onVersionClick?: () => void }) {
       </nav>
 
       {/* Footer */}
-      <div class="p-3 border-t border-border">
-        <button type="button" onClick={props.onVersionClick}>
+      <div class="h-12 px-3 border-t border-border flex items-center flex-shrink-0">
+        <button
+          type="button"
+          onClick={props.onVersionClick}
+          class="flex items-center gap-1.5 min-w-0"
+        >
           <Show when={appVersion()}>
             <span class="text-xs text-text-muted">v{appVersion()}</span>
           </Show>

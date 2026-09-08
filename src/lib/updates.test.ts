@@ -48,10 +48,10 @@ describe("shouldCheckOnLaunch", () => {
 
 describe("formatAvailableNote", () => {
   it("prefixes a leading v", () => {
-    expect(formatAvailableNote("0.4.0")).toBe("v0.4.0 available");
+    expect(formatAvailableNote("0.4.0")).toBe("v0.4.0 upgrade available");
   });
   it("does not double v", () => {
-    expect(formatAvailableNote("v0.4.0")).toBe("v0.4.0 available");
+    expect(formatAvailableNote("v0.4.0")).toBe("v0.4.0 upgrade available");
   });
 });
 
