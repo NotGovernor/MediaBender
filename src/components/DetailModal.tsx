@@ -13,6 +13,11 @@ import {
   setPendingReviewRegenerateFeedback,
   setWorkQueue,
   addGeneratingIds,
+  settings,
+  setPreflightModalOpen,
+  setScheduledIds,
+  scheduledIds,
+  isGenerating,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
 
@@ -83,44 +88,57 @@ export default function DetailModal() {
     addGeneratingIds([fileId]);
   };
 
-  const handleReprocess = () => {
+  const handleReprocess = async () => {
     if (!file()) return;
     const fileId = file()!.id;
     const outputPath = file()!.output_path;
     const inputName = file()!.input_path.split(/[/\\]/).pop();
-    setConfirmDialogConfig({
-      title: "Delete Output File?",
-      message:
-        "The previous output file will be deleted. You will return to command review. The item will not be processed until you approve.",
-      detail: outputPath || "Output path not set",
-      confirmText: "Delete & Review",
-      confirmVariant: "danger",
-      onConfirm: async () => {
-        try {
-          if (outputPath) {
-            await invoke("delete_output_file", { outputPath });
-          }
-          const q = await invoke<WorkQueue>("reset_file", { fileId });
-          setWorkQueue(q);
-        } catch (err) {
-          addLog({
-            timestamp: new Date().toISOString(),
-            level: "warn",
-            message: `Could not delete output file: ${err}`,
-            file_id: fileId,
-          });
-          return;
-        }
+    if (!settings().ffmpeg_path) {
+      setPreflightModalOpen(true);
+      return;
+    }
+    let exists = false;
+    if (outputPath) {
+      exists = await invoke<boolean>("output_file_exists", { outputPath });
+    }
+    const run = async () => {
+      try {
+        const q = await invoke<WorkQueue>("reprocess_file", {
+          fileId,
+          ffmpegPath: settings().ffmpeg_path,
+        });
+        setWorkQueue(q);
+        setScheduledIds((prev) => (prev.includes(fileId) ? prev : [...prev, fileId]));
         addLog({
           timestamp: new Date().toISOString(),
           level: "info",
           message: `Reprocessing: ${inputName}`,
           file_id: fileId,
         });
-        handoffToReview(fileId);
-      },
-    });
-    setConfirmDialogOpen(true);
+        closeModals();
+      } catch (err) {
+        addLog({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          message: `Reprocess failed: ${err}`,
+          file_id: fileId,
+        });
+      }
+    };
+    if (exists) {
+      setConfirmDialogConfig({
+        title: "Overwrite Output File?",
+        message:
+          "The existing output file will be overwritten. A failed run will not restore it.",
+        detail: outputPath,
+        confirmText: "Overwrite & Reprocess",
+        confirmVariant: "danger",
+        onConfirm: run,
+      });
+      setConfirmDialogOpen(true);
+    } else {
+      await run();
+    }
   };
 
   return (
@@ -273,10 +291,20 @@ export default function DetailModal() {
                 >
                   Regenerate Command
                 </button>
-                <Show when={f().output_path !== ""}>
+                <Show
+                  when={
+                    (f().status === "Error" || f().status === "Completed") &&
+                    f().command_args.trim() !== ""
+                  }
+                >
                   <button
                     onClick={handleReprocess}
-                    class="px-4 py-2 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light transition-colors"
+                    disabled={
+                      isGenerating() ||
+                      scheduledIds().includes(f().id) ||
+                      f().status === "Processing"
+                    }
+                    class="px-4 py-2 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     Reprocess File
                   </button>

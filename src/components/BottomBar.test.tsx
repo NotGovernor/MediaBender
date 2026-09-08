@@ -6,6 +6,7 @@ import {
   setSettings,
   addGeneratingIds,
   clearGeneratingIds,
+  setScheduledIds,
 } from "../stores/appStore";
 import { createMockFile, createMockQueue } from "../test-helpers";
 
@@ -26,6 +27,7 @@ function buttonLabels(): string[] {
 describe("BottomBar", () => {
   beforeEach(() => {
     clearGeneratingIds();
+    setScheduledIds([]);
     setWorkQueue(createMockQueue());
     setSettings({
       providers: [
@@ -76,6 +78,14 @@ describe("BottomBar", () => {
   it("disables_Clear_Queue_when_generating", () => {
     setWorkQueue(createMockQueue([createMockFile({ id: "a", status: "Pending" })]));
     addGeneratingIds(["a"]);
+    render(() => <BottomBar />);
+    const clear = screen.getByRole("button", { name: "Clear Queue" }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(true);
+  });
+
+  it("disables_Clear_Queue_when_scheduledIds_nonempty_even_if_all_Pending", () => {
+    setWorkQueue(createMockQueue([createMockFile({ id: "a", status: "Pending" })]));
+    setScheduledIds(["a"]);
     render(() => <BottomBar />);
     const clear = screen.getByRole("button", { name: "Clear Queue" }) as HTMLButtonElement;
     expect(clear.disabled).toBe(true);

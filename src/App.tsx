@@ -37,6 +37,8 @@ import {
   setUpdateProgress,
   setUpdateError,
   setFileDropHovering,
+  scheduledIds,
+  setScheduledIds,
 } from "./stores/appStore";
 import { scanQueue } from "./lib/autoScanner";
 import { checkAndRunDeferredScan } from "./lib/deferredScan";
@@ -62,7 +64,7 @@ function formatByteCount(n: number): string {
 }
 
 async function handleVersionClick() {
-  if (isQueueBlockingUpdate(workQueue().files) && availableUpdateVersion()) {
+  if (isQueueBlockingUpdate(workQueue().files, scheduledIds()) && availableUpdateVersion()) {
     addLog({
       timestamp: new Date().toISOString(),
       level: "warn",
@@ -78,7 +80,7 @@ async function handleVersionClick() {
 }
 
 async function handleInstall() {
-  if (isQueueBlockingUpdate(workQueue().files)) {
+  if (isQueueBlockingUpdate(workQueue().files, scheduledIds())) {
     addLog({
       timestamp: new Date().toISOString(),
       level: "warn",
@@ -150,6 +152,7 @@ export default function App() {
 
   // ── Executor event listener ──
   let unlistenExecutor: (() => void) | null = null;
+  let unlistenPipeline: (() => void) | null = null;
   let unlistenGenerate: (() => void) | null = null;
   let unlistenDrag: (() => void) | undefined;
   const preventNav = (e: DragEvent) => {
@@ -227,6 +230,11 @@ export default function App() {
           });
         }
       }
+    });
+
+    unlistenPipeline = await listen("pipeline-event", (event) => {
+      const payload = event.payload as { scheduledIds?: string[] };
+      setScheduledIds(payload.scheduledIds ?? []);
     });
 
     unlistenGenerate = await listen<VideoFile>("generate-event", (event) => {
@@ -324,6 +332,7 @@ export default function App() {
     window.removeEventListener("drop", preventNav);
     unlistenDrag?.();
     if (unlistenExecutor) unlistenExecutor();
+    if (unlistenPipeline) unlistenPipeline();
     unlistenGenerate?.();
   });
 

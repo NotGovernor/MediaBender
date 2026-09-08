@@ -1,5 +1,8 @@
-export function isQueueBlockingUpdate(files: { status: string }[]): boolean {
-  return files.some((f) => f.status === "Processing");
+export function isQueueBlockingUpdate(
+  files: { status: string }[],
+  scheduledIds: readonly string[] = [],
+): boolean {
+  return scheduledIds.length > 0 || files.some((f) => f.status === "Processing");
 }
 
 export function shouldCheckOnLaunch(opts: {

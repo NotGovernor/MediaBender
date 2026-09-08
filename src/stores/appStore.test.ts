@@ -21,6 +21,9 @@ import {
   clearGeneratingIds,
   generatingIds,
   isGenerating,
+  scheduledIds,
+  setScheduledIds,
+  isPipelineActive,
 } from "./appStore";
 import { createMockFile } from "../test-helpers";
 
@@ -145,5 +148,27 @@ describe("generatingIds overlay", () => {
     }));
     expect(generatingIds()).toEqual(["a"]);
     expect(isGenerating()).toBe(true);
+  });
+});
+
+describe("scheduledIds overlay", () => {
+  beforeEach(() => {
+    setScheduledIds([]);
+    setWorkQueue({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+  });
+
+  it("isPipelineActive_true_when_scheduled_even_if_all_pending", () => {
+    const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+    setScheduledIds(["a"]);
+    expect(scheduledIds()).toEqual(["a"]);
+    expect(workQueue().files[0].status).toBe("Pending");
+    expect(isPipelineActive()).toBe(true);
   });
 });

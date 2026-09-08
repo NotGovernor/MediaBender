@@ -288,6 +288,24 @@ pub fn reset_file(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn prepare_reprocess(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
+    let file = find_file_mut(queue, id)?;
+    if file.command_args.trim().is_empty() {
+        return Err("No command to reprocess".into());
+    }
+    match file.status {
+        FileStatus::Error | FileStatus::Completed | FileStatus::Pending => {}
+        FileStatus::Skipped | FileStatus::Processing | FileStatus::Generating => {
+            return Err("File cannot be reprocessed from this status".into());
+        }
+    }
+    file.status = FileStatus::Pending;
+    file.is_approved = true;
+    file.error_message.clear();
+    file.updated_at = chrono::Utc::now().to_rfc3339();
+    Ok(())
+}
+
 pub fn skip_file(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
     let file = find_file_mut(queue, id)?;
     file.status = FileStatus::Skipped;
@@ -915,6 +933,80 @@ mod tests {
         assert!(f.metadata.is_some());
         assert_eq!(f.command_args, "-c:v copy -c:a copy");
         assert!(f.error_message.is_empty());
+    }
+
+    #[test]
+    fn prepare_reprocess_from_error_pending_approved_clears_error_keeps_args() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.status = FileStatus::Error;
+            f.is_approved = false;
+            f.command_args = "-c:v copy -c:a copy".to_string();
+            f.generated_command = "ffmpeg -i in.mkv -c:v copy out.mkv".to_string();
+            f.output_path = "/transcoded/file1.mkv".to_string();
+            f.error_message = "encode failed".to_string();
+        }));
+        let mut queue = test_queue(vec![file]);
+
+        prepare_reprocess(&mut queue, "file1").unwrap();
+
+        let f = &queue.files[0];
+        assert_eq!(f.status, FileStatus::Pending);
+        assert!(f.is_approved);
+        assert!(f.error_message.is_empty());
+        assert_eq!(f.command_args, "-c:v copy -c:a copy");
+        assert_eq!(f.generated_command, "ffmpeg -i in.mkv -c:v copy out.mkv");
+        assert_eq!(f.output_path, "/transcoded/file1.mkv");
+    }
+
+    #[test]
+    fn prepare_reprocess_from_completed_pending_approved_keeps_output_path() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.status = FileStatus::Completed;
+            f.is_approved = true;
+            f.command_args = "-c:v copy".to_string();
+            f.generated_command = "ffmpeg -i in.mkv out.mkv".to_string();
+            f.output_path = "/transcoded/file1.mkv".to_string();
+            f.output_size = 12345;
+            f.completed_at = "2024-01-01T00:00:00Z".to_string();
+            f.processing_duration = 12.5;
+        }));
+        let mut queue = test_queue(vec![file]);
+
+        prepare_reprocess(&mut queue, "file1").unwrap();
+
+        let f = &queue.files[0];
+        assert_eq!(f.status, FileStatus::Pending);
+        assert!(f.is_approved);
+        assert_eq!(f.output_path, "/transcoded/file1.mkv");
+        assert_eq!(f.command_args, "-c:v copy");
+        assert_eq!(f.generated_command, "ffmpeg -i in.mkv out.mkv");
+        assert_eq!(f.output_size, 12345);
+        assert_eq!(f.completed_at, "2024-01-01T00:00:00Z");
+        assert_eq!(f.processing_duration, 12.5);
+    }
+
+    #[test]
+    fn prepare_reprocess_rejects_empty_command_args() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.status = FileStatus::Error;
+            f.command_args = String::new();
+        }));
+        let mut queue = test_queue(vec![file]);
+
+        let err = prepare_reprocess(&mut queue, "file1").unwrap_err();
+        assert_eq!(err, "No command to reprocess");
+    }
+
+    #[test]
+    fn prepare_reprocess_rejects_skipped() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.status = FileStatus::Skipped;
+            f.command_args = "-c:v copy".to_string();
+        }));
+        let mut queue = test_queue(vec![file]);
+
+        let err = prepare_reprocess(&mut queue, "file1").unwrap_err();
+        assert_eq!(err, "File cannot be reprocessed from this status");
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ mod persistence;
 mod settings_ops;
 mod queue_ops;
 mod processing;
+mod job_fifo;
 mod app_startup;
 mod fs_ops;
 mod process_cmd;
@@ -23,8 +24,8 @@ use queue_ops::{
     add_files as add_files_impl, add_folder as add_folder_impl, add_paths as add_paths_impl,
     apply_command_template as apply_command_template_impl, approve_file as approve_file_impl,
     clear_files as clear_files_impl, generate_commands_snapshots, merge_generated_file,
-    remove_file as remove_file_impl, reset_file as reset_file_impl, scan_and_analyze_snapshots,
-    skip_file as skip_file_impl, unapprove_file as unapprove_file_impl,
+    prepare_reprocess, remove_file as remove_file_impl, reset_file as reset_file_impl,
+    scan_and_analyze_snapshots, skip_file as skip_file_impl, unapprove_file as unapprove_file_impl,
 };
 use tauri::Emitter;
 
@@ -228,56 +229,106 @@ async fn apply_command_template(
 
 #[tauri::command] async fn start_processing(file_ids: Vec<String>, ffmpeg_path: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
     let max_parallel = { let s = state.settings.lock().await; s.max_parallel.max(1) as usize };
-    state.tracker.arm();
-    // Replace the cancellation token so any previous stop signal is cleared.
-    let new_token = tokio_util::sync::CancellationToken::new();
-    let token_to_pass = new_token.clone();
-    *state.current_token.lock().await = Some(new_token);
-
-    let mut to_run = Vec::new();
+    let already_scheduled: std::collections::HashSet<String> = {
+        let fifo = state.job_fifo.fifo.lock().await;
+        fifo.scheduled_ids().into_iter().collect()
+    };
+    let mut to_queue = Vec::new();
     {
         let queue = state.queue.lock().await;
         for id in &file_ids {
+            if already_scheduled.contains(id) {
+                continue;
+            }
             if let Some(f) = queue.files.iter().find(|f| f.id == *id) {
                 if f.is_approved && f.status == FileStatus::Pending && !f.command_args.trim().is_empty() {
-                    to_run.push(f.clone());
+                    to_queue.push(id.clone());
                 }
             }
         }
-        // do not mark Processing here
-    } // drop(queue)
-
-    if to_run.is_empty() {
+    }
+    if to_queue.is_empty() {
+        let fifo = state.job_fifo.fifo.lock().await;
+        if fifo.is_active() {
+            return Ok(());
+        }
         return Err("No eligible files to process".into());
     }
-
-    processing::spawn_processing_pipeline(
-        to_run,
+    {
+        let mut fifo = state.job_fifo.fifo.lock().await;
+        fifo.push_back(to_queue);
+    }
+    processing::ensure_workers(
         ffmpeg_path,
         max_parallel,
         state.tracker.clone(),
-        token_to_pass,
-        app,
+        state.current_token.clone(),
+        state.job_fifo.clone(),
+        app.clone(),
         state.queue.clone(),
         state.store.clone(),
     )
-    .await
+    .await;
+    processing::emit_pipeline_event(&app, &state.job_fifo).await;
+    Ok(())
 }
 
-#[tauri::command] async fn stop_processing(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    // Cancel the pipeline token first so queued tasks never acquire released permits.
-    let token_guard = state.current_token.lock().await;
-    if let Some(token) = token_guard.as_ref() {
-        token.cancel();
+#[tauri::command]
+async fn reprocess_file(
+    file_id: String,
+    ffmpeg_path: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<WorkQueue, String> {
+    let max_parallel = { state.settings.lock().await.max_parallel.max(1) as usize };
+    {
+        let fifo = state.job_fifo.fifo.lock().await;
+        if fifo.is_running(&file_id) {
+            return Err("File is already processing".into());
+        }
     }
-    drop(token_guard);
+    {
+        let mut queue = state.queue.lock().await;
+        prepare_reprocess(&mut queue, &file_id)?;
+        persist_queue(&state.store, &mut queue)?;
+    }
+    {
+        let mut fifo = state.job_fifo.fifo.lock().await;
+        fifo.push_front(file_id.clone());
+    }
+    processing::ensure_workers(
+        ffmpeg_path,
+        max_parallel,
+        state.tracker.clone(),
+        state.current_token.clone(),
+        state.job_fifo.clone(),
+        app.clone(),
+        state.queue.clone(),
+        state.store.clone(),
+    )
+    .await;
+    processing::emit_pipeline_event(&app, &state.job_fifo).await;
+    let queue = state.queue.lock().await;
+    Ok(queue.clone())
+}
+
+#[tauri::command] async fn stop_processing(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    // Cancel first so idle workers exit; clear_pending so leftover ids are not started.
+    let token = state.current_token.lock().await.clone();
+    processing::stop_fifo(&state.job_fifo, token.as_ref()).await;
     // Then kill any children that are already running.
     state.tracker.kill_all().await;
+    processing::emit_pipeline_event(&app, &state.job_fifo).await;
     Ok(())
 }
 
 #[tauri::command] async fn delete_output_file(output_path: String) -> Result<(), String> {
     fs_ops::delete_output_file(output_path).await
+}
+
+#[tauri::command]
+fn output_file_exists(output_path: String) -> bool {
+    fs_ops::output_file_exists(&output_path)
 }
 
 #[tauri::command] async fn save_queue(queue_json: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
@@ -354,7 +405,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             add_files, add_folder, add_paths, remove_file, clear_queue, approve_file, unapprove_file,
             skip_file, reset_file, scan_and_analyze, generate_commands, apply_command_template,
-            fetch_models, verify_ffmpeg_paths, start_processing, stop_processing, delete_output_file,
+            fetch_models, verify_ffmpeg_paths, start_processing, reprocess_file, stop_processing, delete_output_file, output_file_exists,
             save_queue, load_queue, load_settings, save_settings, load_guidelines, save_guidelines, get_default_guidelines, interview_guidelines,
         ])
         .run(tauri::generate_context!())

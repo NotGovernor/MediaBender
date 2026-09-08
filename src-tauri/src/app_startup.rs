@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 use crate::binary_discovery::find_binary;
 use crate::defaults::{default_guidelines, default_queue, default_settings};
 use crate::executor::ProcessTracker;
+use crate::job_fifo::JobFifoState;
 use crate::models::{AppSettings, FileStatus, WorkQueue};
 use crate::persistence::{JsonFileStore, Persistence};
 
@@ -12,8 +13,9 @@ pub struct AppState {
     pub settings: Arc<Mutex<AppSettings>>,
     pub tracker: Arc<ProcessTracker>,
     /// Cancellation token for the currently running processing pipeline.
-    /// Replaced each time `start_processing` is called.
+    /// Replaced only when the previous token is missing or cancelled, not on every Start.
     pub current_token: Arc<Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    pub job_fifo: Arc<crate::job_fifo::JobFifoState>,
     pub store: JsonFileStore,
 }
 
@@ -59,6 +61,7 @@ pub fn build_app_state() -> AppState {
         settings: Arc::new(Mutex::new(settings)),
         tracker: Arc::new(ProcessTracker::new()),
         current_token: Arc::new(Mutex::new(None)),
+        job_fifo: Arc::new(JobFifoState::new()),
         store,
     }
 }

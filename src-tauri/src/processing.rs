@@ -1,43 +1,17 @@
 use crate::executor::{ExecutorEvent, FFmpegExecutor, ProcessTracker};
+use crate::job_fifo::JobFifoState;
 use crate::models::{FileStatus, VideoFile, WorkQueue};
 use crate::persistence::{JsonFileStore, Persistence};
+#[cfg(test)]
 use std::future::Future;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::Emitter;
+use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 pub fn should_delete_output(success: bool, _cancelled: bool) -> bool {
     !success
-}
-
-/// Schedule jobs without waiting on them. Acquire the semaphore **inside**
-/// each spawned task so the scheduling loop never holds a permit.
-pub fn spawn_jobs<F, Fut>(
-    files: Vec<VideoFile>,
-    semaphore: Arc<tokio::sync::Semaphore>,
-    cancel_token: tokio_util::sync::CancellationToken,
-    job: F,
-) where
-    F: Fn(VideoFile) -> Fut + Clone + Send + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    for file in files {
-        if cancel_token.is_cancelled() {
-            break;
-        }
-        let semaphore = semaphore.clone();
-        let cancel_token = cancel_token.clone();
-        let job = job.clone();
-        tokio::spawn(async move {
-            let Ok(_permit) = semaphore.acquire_owned().await else {
-                return;
-            };
-            if cancel_token.is_cancelled() {
-                return;
-            }
-            job(file).await;
-        });
-    }
 }
 
 async fn persist_started(queue: &Arc<Mutex<WorkQueue>>, store: &JsonFileStore, file_id: &str) {
@@ -81,31 +55,29 @@ async fn persist_completed(
     let _ = store.save_queue(&q);
 }
 
-pub async fn spawn_processing_pipeline(
-    files: Vec<VideoFile>,
-    ffmpeg_path: String,
-    max_parallel: usize,
-    tracker: Arc<ProcessTracker>,
-    cancel_token: tokio_util::sync::CancellationToken,
+pub async fn emit_pipeline_event(app: &tauri::AppHandle, state: &JobFifoState) {
+    let scheduled_ids = {
+        let fifo = state.fifo.lock().await;
+        fifo.scheduled_ids()
+    };
+    let payload = serde_json::json!({ "scheduledIds": scheduled_ids });
+    let _ = app.emit("pipeline-event", payload);
+}
+
+fn spawn_executor_event_receiver(
+    mut rx: mpsc::Receiver<ExecutorEvent>,
     app: tauri::AppHandle,
     queue: Arc<Mutex<WorkQueue>>,
     store: JsonFileStore,
-) -> Result<(), String> {
-    // Caller already filtered; clone so the slice/vec is owned for spawn.
-    let files_to_process = files.clone();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(100);
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_parallel.max(1)));
-
+) {
     // Spawn the event receiver FIRST so it consumes events in real time
     // and prevents the mpsc channel from filling up and deadlocking producers.
-    let recv_queue = queue.clone();
-    let recv_store = store.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             // Persist Started/Completed before emit to shrink crash desync.
             match &event {
                 ExecutorEvent::Started { file_id } => {
-                    persist_started(&recv_queue, &recv_store, file_id).await;
+                    persist_started(&queue, &store, file_id).await;
                 }
                 ExecutorEvent::Completed {
                     file_id,
@@ -116,8 +88,8 @@ pub async fn spawn_processing_pipeline(
                     completed_at,
                 } => {
                     persist_completed(
-                        &recv_queue,
-                        &recv_store,
+                        &queue,
+                        &store,
                         file_id,
                         *success,
                         message,
@@ -139,91 +111,399 @@ pub async fn spawn_processing_pipeline(
                 ExecutorEvent::Stderr { file_id, line } => {
                     serde_json::json!({"type": "stderr", "fileId": file_id, "line": line })
                 }
-                ExecutorEvent::Completed { file_id, success, message, output_size, processing_duration, completed_at } => {
+                ExecutorEvent::Completed {
+                    file_id,
+                    success,
+                    message,
+                    output_size,
+                    processing_duration,
+                    completed_at,
+                } => {
                     serde_json::json!({"type": "completed", "fileId": file_id, "success": success, "message": message, "outputSize": output_size, "processingDuration": processing_duration, "completedAt": completed_at })
                 }
             };
             let _ = app.emit("executor-event", payload);
         }
     });
+}
 
-    spawn_jobs(files_to_process, semaphore, cancel_token, move |file| {
-        let tx = tx.clone();
-        let ffmpeg_path = ffmpeg_path.clone();
-        let tracker = tracker.clone();
-        async move {
-            let executor = FFmpegExecutor::new(tracker);
-            let result = executor.execute(&file, &ffmpeg_path, tx).await;
-            let success = result.is_ok();
-            let cancelled = matches!(&result, Err(e) if e == "Processing was stopped");
-            if should_delete_output(success, cancelled) {
-                let _ = crate::fs_ops::delete_output_file(file.output_path.clone()).await;
-            }
+async fn run_execute_job(
+    file: VideoFile,
+    ffmpeg_path: String,
+    tracker: Arc<ProcessTracker>,
+    tx: mpsc::Sender<ExecutorEvent>,
+) {
+    let executor = FFmpegExecutor::new(tracker);
+    let result = executor.execute(&file, &ffmpeg_path, tx).await;
+    let success = result.is_ok();
+    let cancelled = matches!(&result, Err(e) if e == "Processing was stopped");
+    if should_delete_output(success, cancelled) {
+        let _ = crate::fs_ops::delete_output_file(file.output_path.clone()).await;
+    }
+}
+
+fn pickup_eligible(file: &VideoFile) -> bool {
+    file.is_approved
+        && file.status == FileStatus::Pending
+        && !file.command_args.trim().is_empty()
+}
+
+async fn fifo_worker(
+    state: Arc<JobFifoState>,
+    token: tokio_util::sync::CancellationToken,
+    app: tauri::AppHandle,
+    queue: Arc<Mutex<WorkQueue>>,
+    tracker: Arc<ProcessTracker>,
+    ffmpeg_path: String,
+    tx: mpsc::Sender<ExecutorEvent>,
+) {
+    loop {
+        if token.is_cancelled() {
+            break;
         }
-    });
+        let id = {
+            let mut fifo = state.fifo.lock().await;
+            fifo.pop_front()
+        };
+        if let Some(file_id) = id {
+            emit_pipeline_event(&app, &state).await;
+            let file = {
+                let q = queue.lock().await;
+                q.files.iter().find(|f| f.id == file_id).cloned()
+            };
+            if let Some(file) = file.filter(pickup_eligible) {
+                run_execute_job(file, ffmpeg_path.clone(), tracker.clone(), tx.clone()).await;
+            }
+            {
+                let mut fifo = state.fifo.lock().await;
+                fifo.finish(&file_id);
+            }
+            emit_pipeline_event(&app, &state).await;
+            state.notify.notify_waiters();
+            continue;
+        }
+        tokio::select! {
+            _ = token.cancelled() => break,
+            _ = state.notify.notified() => {}
+        }
+    }
+}
 
-    Ok(())
+/// Test-only worker loop: same pop/finish/Notify as `fifo_worker`, with a fake job.
+#[cfg(test)]
+async fn fifo_worker_with_job<F, Fut>(
+    state: Arc<JobFifoState>,
+    token: tokio_util::sync::CancellationToken,
+    job: F,
+) where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    loop {
+        if token.is_cancelled() {
+            break;
+        }
+        let id = {
+            let mut fifo = state.fifo.lock().await;
+            fifo.pop_front()
+        };
+        if let Some(file_id) = id {
+            job(file_id.clone()).await;
+            {
+                let mut fifo = state.fifo.lock().await;
+                fifo.finish(&file_id);
+            }
+            state.notify.notify_waiters();
+            continue;
+        }
+        tokio::select! {
+            _ = token.cancelled() => break,
+            _ = state.notify.notified() => {}
+        }
+    }
+}
+
+/// Cancel the live FIFO session: waiting workers exit; pending is cleared so a later
+/// session cannot start leftover ids. Does not `finish()` running ids.
+pub async fn stop_fifo(
+    job_fifo: &JobFifoState,
+    token: Option<&tokio_util::sync::CancellationToken>,
+) {
+    if let Some(token) = token {
+        token.cancel();
+    }
+    {
+        let mut fifo = job_fifo.fifo.lock().await;
+        fifo.clear_pending();
+    }
+    job_fifo.workers_spawned.store(false, Ordering::SeqCst);
+    job_fifo.notify.notify_waiters();
+}
+
+pub async fn ensure_workers(
+    ffmpeg_path: String,
+    max_parallel: usize,
+    tracker: Arc<ProcessTracker>,
+    current_token: Arc<Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    job_fifo: Arc<JobFifoState>,
+    app: tauri::AppHandle,
+    queue: Arc<Mutex<WorkQueue>>,
+    store: JsonFileStore,
+) {
+    let mut token_slot = current_token.lock().await;
+    let need_new = token_slot.as_ref().map(|t| t.is_cancelled()).unwrap_or(true);
+    if need_new {
+        tracker.arm();
+        let t = tokio_util::sync::CancellationToken::new();
+        *token_slot = Some(t);
+        job_fifo.workers_spawned.store(false, Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel::<ExecutorEvent>(100);
+        spawn_executor_event_receiver(rx, app.clone(), queue.clone(), store);
+        *job_fifo.executor_tx.lock().await = Some(tx);
+    }
+    let token = token_slot.as_ref().unwrap().clone();
+    drop(token_slot);
+
+    if !job_fifo.workers_spawned.swap(true, Ordering::SeqCst) {
+        let tx = job_fifo
+            .executor_tx
+            .lock()
+            .await
+            .clone()
+            .expect("executor_tx must be set for a live session");
+        for _ in 0..max_parallel.max(1) {
+            let state = job_fifo.clone();
+            let token = token.clone();
+            let app = app.clone();
+            let queue = queue.clone();
+            let tracker = tracker.clone();
+            let ffmpeg_path = ffmpeg_path.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                fifo_worker(state, token, app, queue, tracker, ffmpeg_path, tx).await;
+            });
+        }
+    }
+    job_fifo.notify.notify_waiters();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::FileStatus;
     use std::sync::Arc;
 
-    fn dummy_file(id: &str) -> VideoFile {
-        VideoFile {
-            id: id.to_string(),
-            input_path: String::new(),
-            output_path: String::new(),
-            scan_root: String::new(),
-            ffprobe_raw: String::new(),
-            metadata: None,
-            generated_command: String::new(),
-            command_args: String::new(),
-            description: String::new(),
-            reasoning: String::new(),
-            status: FileStatus::Pending,
-            is_approved: false,
-            error_message: String::new(),
-            created_at: String::new(),
-            updated_at: String::new(),
-            input_size: 0,
-            output_size: 0,
-            processing_duration: 0.0,
-            completed_at: String::new(),
+    struct FifoFakeHarness {
+        state: Arc<crate::job_fifo::JobFifoState>,
+        current_token: Arc<Mutex<Option<Arc<tokio_util::sync::CancellationToken>>>>,
+        started: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FifoFakeHarness {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(crate::job_fifo::JobFifoState::new()),
+                current_token: Arc::new(Mutex::new(None)),
+                started: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        async fn session_token(&self) -> Arc<tokio_util::sync::CancellationToken> {
+            self.current_token
+                .lock()
+                .await
+                .as_ref()
+                .expect("session token")
+                .clone()
+        }
+
+        async fn started_ids(&self) -> Vec<String> {
+            self.started.lock().await.clone()
+        }
+
+        async fn wait_idle(&self) {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                {
+                    let fifo = self.state.fifo.lock().await;
+                    if !fifo.is_active() {
+                        return;
+                    }
+                }
+                if tokio::time::Instant::now() > deadline {
+                    panic!("fifo did not drain");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+
+        async fn wait_started_contains(&self, id: &str) {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                if self.started.lock().await.iter().any(|x| x == id) {
+                    return;
+                }
+                if tokio::time::Instant::now() > deadline {
+                    panic!("job {id} did not start");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
         }
     }
 
-    async fn spawn_jobs_for_test(n_files: usize, max_parallel: usize) {
-        let files: Vec<VideoFile> = (0..n_files).map(|i| dummy_file(&i.to_string())).collect();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_parallel.max(1)));
-        let cancel_token = tokio_util::sync::CancellationToken::new();
-        spawn_jobs(files, semaphore, cancel_token, |_file| async {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        });
+    struct HoldGate {
+        open: std::sync::atomic::AtomicBool,
+        notify: tokio::sync::Notify,
+    }
+
+    impl HoldGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                open: std::sync::atomic::AtomicBool::new(false),
+                notify: tokio::sync::Notify::new(),
+            })
+        }
+
+        async fn wait(&self) {
+            while !self.open.load(Ordering::SeqCst) {
+                self.notify.notified().await;
+            }
+        }
+
+        fn release(&self) {
+            self.open.store(true, Ordering::SeqCst);
+            self.notify.notify_waiters();
+        }
+    }
+
+    /// Test-only: max_parallel fake workers, no ffmpeg. Records job start order.
+    async fn run_fifo_with_fake_job(harness: &FifoFakeHarness, max_parallel: usize) {
+        spawn_fifo_fake_workers(harness, max_parallel, None).await;
+    }
+
+    async fn spawn_fifo_fake_workers(
+        harness: &FifoFakeHarness,
+        max_parallel: usize,
+        hold: Option<Arc<HoldGate>>,
+    ) {
+        let mut slot = harness.current_token.lock().await;
+        let need_new = slot.as_ref().map(|t| t.is_cancelled()).unwrap_or(true);
+        if need_new {
+            *slot = Some(Arc::new(tokio_util::sync::CancellationToken::new()));
+            harness
+                .state
+                .workers_spawned
+                .store(false, Ordering::SeqCst);
+        }
+        let token = slot.as_ref().unwrap().clone();
+        drop(slot);
+
+        if !harness.state.workers_spawned.swap(true, Ordering::SeqCst) {
+            for _ in 0..max_parallel.max(1) {
+                let state = harness.state.clone();
+                let token = (*token).clone();
+                let started = harness.started.clone();
+                let hold = hold.clone();
+                tokio::spawn(async move {
+                    fifo_worker_with_job(state, token, move |file_id| {
+                        let started = started.clone();
+                        let hold = hold.clone();
+                        async move {
+                            started.lock().await.push(file_id);
+                            if let Some(ref hold) = hold {
+                                hold.wait().await;
+                            } else {
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                            }
+                        }
+                    })
+                    .await;
+                });
+            }
+        }
+        harness.state.notify.notify_waiters();
     }
 
     #[tokio::test]
-    async fn spawn_jobs_acquires_permits_inside_tasks_not_in_the_loop() {
-        // Zero available permits: if acquire lived in the scheduling loop,
-        // this would hang. Spawn, then acquire inside each task.
-        let files = vec![dummy_file("a"), dummy_file("b")];
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(0));
-        let cancel_token = tokio_util::sync::CancellationToken::new();
-        let started = std::time::Instant::now();
-        spawn_jobs(files, semaphore, cancel_token, |_file| async {
-            panic!("job must not run without a permit");
-        });
-        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    async fn stop_clears_pending_keeps_caller_from_starting_cleared_ids() {
+        let h = FifoFakeHarness::new();
+        let hold = HoldGate::new();
+        spawn_fifo_fake_workers(&h, 1, Some(hold.clone())).await;
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["a".into(), "b".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_started_contains("a").await;
+
+        stop_fifo(&h.state, Some(h.session_token().await.as_ref())).await;
+
+        {
+            let fifo = h.state.fifo.lock().await;
+            assert_eq!(fifo.pending_len(), 0);
+            let scheduled = fifo.scheduled_ids();
+            assert!(scheduled.contains(&"a".to_string()));
+            assert!(!scheduled.contains(&"b".to_string()));
+        }
+        assert_eq!(h.started_ids().await, vec!["a"]);
+
+        hold.release();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(h.started_ids().await, vec!["a"]);
+
+        spawn_fifo_fake_workers(&h, 1, None).await;
+        h.wait_idle().await;
+        assert_eq!(h.started_ids().await, vec!["a"]);
     }
 
     #[tokio::test]
-    async fn spawn_jobs_returns_before_tasks_finish() {
-        let started = std::time::Instant::now();
-        // spawn 2 tasks that sleep 2s with max_parallel=1
-        spawn_jobs_for_test(2, 1).await;
-        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    async fn fifo_workers_start_jobs_in_push_back_order() {
+        let h = FifoFakeHarness::new();
+        run_fifo_with_fake_job(&h, 1).await;
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["a".into(), "b".into(), "c".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_idle().await;
+        assert_eq!(h.started_ids().await, vec!["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn second_enqueue_appends_without_new_session() {
+        let h = FifoFakeHarness::new();
+        run_fifo_with_fake_job(&h, 1).await;
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["a".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_started_contains("a").await;
+        let token_before = h.session_token().await;
+        run_fifo_with_fake_job(&h, 1).await;
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["b".into()]);
+        }
+        h.state.notify.notify_waiters();
+        h.wait_idle().await;
+        assert_eq!(h.started_ids().await, vec!["a", "b"]);
+        let token_after = h.session_token().await;
+        assert!(Arc::ptr_eq(&token_before, &token_after));
+    }
+
+    #[tokio::test]
+    async fn push_front_runs_before_remaining_pending() {
+        let h = FifoFakeHarness::new();
+        {
+            let mut fifo = h.state.fifo.lock().await;
+            fifo.push_back(["b".into(), "c".into()]);
+            assert!(fifo.scheduled_ids().iter().all(|id| id != "a"));
+            fifo.push_front("a".into());
+        }
+        run_fifo_with_fake_job(&h, 1).await;
+        h.wait_idle().await;
+        let order = h.started_ids().await;
+        assert_eq!(order.first().map(String::as_str), Some("a"));
     }
 
     #[test]

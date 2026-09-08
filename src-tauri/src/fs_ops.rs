@@ -33,9 +33,16 @@ pub fn ensure_output_parent(output_path: &str) -> Result<(), String> {
     })
 }
 
+pub fn output_file_exists(output_path: &str) -> bool {
+    if output_path.is_empty() {
+        return false;
+    }
+    Path::new(output_path).is_file()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ensure_output_parent;
+    use super::*;
     use std::fs;
 
     #[test]
@@ -70,5 +77,25 @@ mod tests {
             "got {err}"
         );
         let _ = fs::remove_file(&file);
+    }
+
+    #[test]
+    fn output_file_exists_true_for_file() {
+        let p = std::env::temp_dir().join(format!("mb_exists_{}.mkv", std::process::id()));
+        std::fs::write(&p, b"x").unwrap();
+        assert!(output_file_exists(&p.to_string_lossy()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn output_file_exists_false_if_missing() {
+        let p = std::env::temp_dir().join("mb_exists_missing_should_not_exist.mkv");
+        let _ = std::fs::remove_file(&p);
+        assert!(!output_file_exists(&p.to_string_lossy()));
+    }
+
+    #[test]
+    fn output_file_exists_false_if_empty_path() {
+        assert!(!output_file_exists(""));
     }
 }

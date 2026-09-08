@@ -12,6 +12,7 @@ import {
   addGeneratingIds,
   logEntries,
   clearLogs,
+  setScheduledIds,
 } from "../stores/appStore";
 import { createMockFile, createMockQueue } from "../test-helpers";
 
@@ -23,6 +24,7 @@ describe("TopBar", () => {
   beforeEach(() => {
     clearLogs();
     clearGeneratingIds();
+    setScheduledIds([]);
     setWorkQueue(createMockQueue());
 
     setSettings({
@@ -394,6 +396,62 @@ describe("TopBar", () => {
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("start_processing", expect.objectContaining({
         fileIds: ["a"],
+      }));
+    });
+  });
+
+  it("shows_Add_to_Queue_count_excluding_scheduled_ids", () => {
+    const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    const fileB = createMockFile({ id: "b", status: "Pending", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+    setScheduledIds(["a"]);
+
+    render(() => <TopBar />);
+
+    const addButton = screen.getByRole("button", { name: /Add to Queue/ }) as HTMLButtonElement;
+    expect(addButton.textContent).toBe("Add to Queue (1)");
+  });
+
+  it("hides_Start_when_pipeline_active_and_addable_zero", () => {
+    const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+    setScheduledIds(["a"]);
+
+    render(() => <TopBar />);
+
+    expect(screen.queryByRole("button", { name: /Start Processing/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Add to Queue/ })).toBeNull();
+    expect(screen.getByText("Stop")).toBeTruthy();
+  });
+
+  it("shows_Stop_and_Start_together_when_pipeline_active_with_addable", () => {
+    const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    const fileB = createMockFile({ id: "b", status: "Pending", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+    setScheduledIds(["a"]);
+
+    render(() => <TopBar />);
+
+    expect(screen.getByText("Stop")).toBeTruthy();
+    const addButton = screen.getByRole("button", { name: /Add to Queue/ }) as HTMLButtonElement;
+    expect(addButton.textContent).toBe("Add to Queue (1)");
+  });
+
+  it("Add_to_Queue_invokes_start_processing_with_unscheduled_ids_only", async () => {
+    const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
+    const fileB = createMockFile({ id: "b", status: "Pending", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+    setScheduledIds(["a"]);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    render(() => <TopBar />);
+    fireEvent.click(screen.getByRole("button", { name: /Add to Queue/ }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("start_processing", expect.objectContaining({
+        fileIds: ["b"],
       }));
     });
   });

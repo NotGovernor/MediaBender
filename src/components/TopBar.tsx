@@ -10,13 +10,16 @@ import {
   settings,
   addLog,
   setPreflightModalOpen,
+  scheduledIds,
+  setScheduledIds,
+  isPipelineActive,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
-import { isStartEligible } from "../lib/queueReadiness";
+import { isAddable } from "../lib/queueReadiness";
 
 export default function TopBar() {
-  const startEligibleCount = () =>
-    workQueue().files.filter(isStartEligible).length;
+  const addableCount = () =>
+    workQueue().files.filter((f) => isAddable(f, scheduledIds())).length;
   const analyzedCount = () =>
     workQueue().files.filter((f) => f.metadata && !f.generated_command).length;
   const processingCount = () =>
@@ -130,9 +133,9 @@ export default function TopBar() {
     }
 
     const s = settings();
-    const approvedPending = workQueue().files.filter(isStartEligible).map((f) => f.id);
+    const addableIds = workQueue().files.filter((f) => isAddable(f, scheduledIds())).map((f) => f.id);
 
-    if (approvedPending.length === 0) {
+    if (addableIds.length === 0) {
       addLog({
         timestamp: new Date().toISOString(),
         level: "info",
@@ -144,14 +147,15 @@ export default function TopBar() {
     addLog({
       timestamp: new Date().toISOString(),
       level: "info",
-      message: `Starting processing for ${approvedPending.length} file${approvedPending.length === 1 ? "" : "s"}...`,
+      message: `Starting processing for ${addableIds.length} file${addableIds.length === 1 ? "" : "s"}...`,
     });
 
     try {
       await invoke("start_processing", {
-        fileIds: approvedPending,
+        fileIds: addableIds,
         ffmpegPath: s.ffmpeg_path,
       });
+      setScheduledIds((ids) => [...new Set([...ids, ...addableIds])]);
     } catch (err) {
       addLog({
         timestamp: new Date().toISOString(),
@@ -219,20 +223,20 @@ export default function TopBar() {
         Approve All
       </button>
 
-      <Show
-        when={isProcessing()}
-        fallback={
-          <button
-            onClick={handleStart}
-            disabled={startEligibleCount() === 0 || isGenerating()}
-            class="px-4 py-1.5 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {startEligibleCount() > 0
-              ? `Start Processing (${startEligibleCount()})`
+      <Show when={!(isPipelineActive() && addableCount() === 0)}>
+        <button
+          onClick={handleStart}
+          disabled={addableCount() === 0 || isGenerating()}
+          class="px-4 py-1.5 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {isPipelineActive()
+            ? `Add to Queue (${addableCount()})`
+            : addableCount() > 0
+              ? `Start Processing (${addableCount()})`
               : "Start Processing"}
-          </button>
-        }
-      >
+        </button>
+      </Show>
+      <Show when={isPipelineActive()}>
         <button
           onClick={handleStop}
           class="px-4 py-1.5 rounded text-sm font-medium bg-danger text-white hover:bg-danger/80 transition-colors flex items-center gap-2"

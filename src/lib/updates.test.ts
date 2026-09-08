@@ -18,6 +18,18 @@ describe("isQueueBlockingUpdate", () => {
       isQueueBlockingUpdate([{ status: "Pending" }, { status: "Completed" }]),
     ).toBe(false);
   });
+
+  it("isQueueBlockingUpdate_true_when_scheduledIds_nonempty", () => {
+    expect(
+      isQueueBlockingUpdate([{ status: "Pending" }], ["a"]),
+    ).toBe(true);
+  });
+
+  it("isQueueBlockingUpdate_true_when_processing", () => {
+    expect(
+      isQueueBlockingUpdate([{ status: "Pending" }, { status: "Processing" }]),
+    ).toBe(true);
+  });
 });
 
 describe("shouldCheckOnLaunch", () => {

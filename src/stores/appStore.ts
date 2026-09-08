@@ -184,6 +184,12 @@ export const isProcessing = createMemo(() =>
 );
 export const [currentProcessingId, setCurrentProcessingId] = createSignal<string | null>(null);
 
+// ── Scheduled overlay (webview-only; waiters stay Pending until Started) ──
+export const [scheduledIds, setScheduledIds] = createSignal<string[]>([]);
+export const isPipelineActive = createMemo(
+  () => scheduledIds().length > 0 || workQueue().files.some((f) => f.status === "Processing"),
+);
+
 // ── Scanning State ──
 export const [isScanning, setIsScanning] = createSignal(false);
 

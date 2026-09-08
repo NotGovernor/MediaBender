@@ -9,8 +9,8 @@ import {
   addLog,
   setConfirmDialogOpen,
   setConfirmDialogConfig,
-  isProcessing,
   isGenerating,
+  isPipelineActive,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
 import { scanPendingAfterAdd } from "../lib/scanPendingAfterAdd";
@@ -81,7 +81,7 @@ export default function BottomBar() {
   };
 
   const handleClearQueue = () => {
-    if (workQueue().files.length === 0 || isProcessing() || isGenerating()) return;
+    if (workQueue().files.length === 0 || isPipelineActive() || isGenerating()) return;
     setConfirmDialogConfig({
       title: "Clear Queue?",
       message: "This will remove all files from the current queue. This action cannot be undone.",
@@ -155,7 +155,7 @@ export default function BottomBar() {
 
       <button
         onClick={handleClearQueue}
-        disabled={workQueue().files.length === 0 || isProcessing() || isGenerating()}
+        disabled={workQueue().files.length === 0 || isPipelineActive() || isGenerating()}
         class="px-3 py-1.5 rounded text-xs font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
       >
         Clear Queue

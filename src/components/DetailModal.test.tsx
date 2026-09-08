@@ -9,6 +9,9 @@ import {
   setReviewModalOpen,
   setConfirmDialogOpen,
   setPendingReviewRegenerateFeedback,
+  setSettings,
+  setScheduledIds,
+  setPreflightModalOpen,
   workQueue,
   selectedFileId,
   detailModalOpen,
@@ -18,8 +21,11 @@ import {
   pendingReviewRegenerateFeedback,
   generatingIds,
   clearGeneratingIds,
+  scheduledIds,
+  preflightModalOpen,
 } from "../stores/appStore";
-import type { VideoFile } from "../types";
+import type { VideoFile, WorkQueue } from "../types";
+import { invoke } from "@tauri-apps/api/core";
 
 // Mock Tauri invoke
 vi.mock("@tauri-apps/api/core", () => ({
@@ -84,6 +90,21 @@ describe("DetailModal", () => {
     setSelectedFileId(null);
     setPendingReviewRegenerateFeedback(null);
     clearGeneratingIds();
+    setScheduledIds([]);
+    setPreflightModalOpen(false);
+    vi.mocked(invoke).mockReset();
+    setSettings({
+      providers: [
+        { base_url: "http://localhost", api_key: "key", model: "model" },
+      ],
+      active_provider_index: 0,
+      ffmpeg_path: "/usr/bin/ffmpeg",
+      ffprobe_path: "/usr/bin/ffprobe",
+      default_output_folder: "/media/output",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+      check_updates_on_startup: true,
+    });
   });
 
   it("shows just the filename in the title without 'File Details' fallback", () => {
@@ -359,19 +380,18 @@ describe("DetailModal", () => {
     expect(regenerateButton.disabled).toBe(true);
   });
 
-  it("shows Reprocess File button when output_path is non-empty", () => {
-    const mockFile = createMockFile({ output_path: "/media/output/TestMovie.mkv" });
-    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
-    setSelectedFileId(mockFile.id);
-    setDetailModalOpen(true);
+  function pendingApprovedQueue(file: VideoFile): WorkQueue {
+    return {
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [{ ...file, status: "Pending", is_approved: true }],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    };
+  }
 
-    render(() => <DetailModal />);
-
-    expect(screen.getByText("Reprocess File")).toBeTruthy();
-  });
-
-  it("hides Reprocess File button when output_path is empty", () => {
-    const mockFile = createMockFile({ output_path: "" });
+  it("hides_Reprocess_when_status_skipped", () => {
+    const mockFile = createMockFile({ status: "Skipped" });
     setWorkQueue((q) => ({ ...q, files: [mockFile] }));
     setSelectedFileId(mockFile.id);
     setDetailModalOpen(true);
@@ -381,33 +401,192 @@ describe("DetailModal", () => {
     expect(screen.queryByText("Reprocess File")).toBeFalsy();
   });
 
-  it("opens delete confirm on top of Detail when Reprocess File is clicked", () => {
-    const mockFile = createMockFile();
+  it("hides_Reprocess_when_command_args_empty", () => {
+    const mockFile = createMockFile({ status: "Completed", command_args: "" });
     setWorkQueue((q) => ({ ...q, files: [mockFile] }));
     setSelectedFileId(mockFile.id);
     setDetailModalOpen(true);
 
     render(() => <DetailModal />);
 
-    fireEvent.click(screen.getByText("Reprocess File"));
-
-    expect(confirmDialogOpen()).toBe(true);
-    expect(detailModalOpen()).toBe(true);
-    expect(reviewModalOpen()).toBe(false);
-    expect(selectedFileId()).toBe(mockFile.id);
-    expect(confirmDialogConfig()?.title).toBe("Delete Output File?");
-    expect(confirmDialogConfig()?.message).toMatch(/command review/i);
-    expect(confirmDialogConfig()?.message).not.toMatch(/re-queued for processing/i);
+    expect(screen.queryByText("Reprocess File")).toBeFalsy();
   });
 
-  it("hands off to Review after Reprocess confirm deletes and resets", async () => {
+  it("hides_Reprocess_when_status_pending", () => {
+    const mockFile = createMockFile({ status: "Pending" });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    expect(screen.queryByText("Reprocess File")).toBeFalsy();
+  });
+
+  it("shows_Reprocess_for_error_with_command", () => {
+    const mockFile = createMockFile({
+      status: "Error",
+      command_args: "-c:v copy -c:a opus",
+      output_path: "",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    expect(screen.getByText("Reprocess File")).toBeTruthy();
+  });
+
+  it("shows_Reprocess_for_completed_with_command", () => {
+    const mockFile = createMockFile({
+      status: "Completed",
+      command_args: "-c:v copy -c:a opus",
+      output_path: "",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    expect(screen.getByText("Reprocess File")).toBeTruthy();
+  });
+
+  it("reprocess_skips_confirm_when_output_missing", async () => {
     const mockFile = createMockFile();
     setWorkQueue((q) => ({ ...q, files: [mockFile] }));
     setSelectedFileId(mockFile.id);
     setDetailModalOpen(true);
 
     const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "output_file_exists") return false;
+      if (cmd === "reprocess_file") return pendingApprovedQueue(mockFile);
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    render(() => <DetailModal />);
+
+    fireEvent.click(screen.getByText("Reprocess File"));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("reprocess_file", {
+        fileId: mockFile.id,
+        ffmpegPath: "/usr/bin/ffmpeg",
+      });
+    });
+
+    expect(confirmDialogOpen()).toBe(false);
+    expect(detailModalOpen()).toBe(false);
+    expect(reviewModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(null);
+    expect(invoke).not.toHaveBeenCalledWith("delete_output_file", expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith("reset_file", expect.anything());
+  });
+
+  it("reprocess_confirms_overwrite_when_output_exists", async () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "output_file_exists") return true;
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    render(() => <DetailModal />);
+
+    fireEvent.click(screen.getByText("Reprocess File"));
+
+    await waitFor(() => {
+      expect(confirmDialogOpen()).toBe(true);
+    });
+
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(mockFile.id);
+    expect(confirmDialogConfig()?.title).toBe("Overwrite Output File?");
+    expect(confirmDialogConfig()?.message).toMatch(/overwritten/i);
+    expect(confirmDialogConfig()?.message).not.toMatch(/command review/i);
+    expect(confirmDialogConfig()?.detail).toBe(mockFile.output_path);
+    expect(confirmDialogConfig()?.confirmText).toBe("Overwrite & Reprocess");
+    expect(confirmDialogConfig()?.confirmVariant).toBe("danger");
+    expect(invoke).not.toHaveBeenCalledWith("reprocess_file", expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith("delete_output_file", expect.anything());
+  });
+
+  it("reprocess_invokes_reprocess_file_and_closes_to_queue", async () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "output_file_exists") return true;
+      if (cmd === "reprocess_file") return pendingApprovedQueue(mockFile);
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    render(() => <DetailModal />);
+
+    fireEvent.click(screen.getByText("Reprocess File"));
+
+    await waitFor(() => {
+      expect(confirmDialogOpen()).toBe(true);
+    });
+
+    await confirmDialogConfig()!.onConfirm();
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("reprocess_file", {
+        fileId: mockFile.id,
+        ffmpegPath: "/usr/bin/ffmpeg",
+      });
+    });
+
+    expect(invoke).not.toHaveBeenCalledWith("delete_output_file", expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith("reset_file", expect.anything());
+    expect(detailModalOpen()).toBe(false);
+    expect(reviewModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(null);
+    expect(scheduledIds()).toContain(mockFile.id);
+  });
+
+  it("reprocess_opens_preflight_when_ffmpeg_path_empty", async () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+    setSettings((s) => ({ ...s, ffmpeg_path: "" }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockClear();
+
+    render(() => <DetailModal />);
+
+    fireEvent.click(screen.getByText("Reprocess File"));
+
+    await waitFor(() => {
+      expect(preflightModalOpen()).toBe(true);
+    });
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(confirmDialogOpen()).toBe(false);
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+  });
+
+  it("reset_status_still_handoffs_to_review", async () => {
+    const mockFile = createMockFile({ status: "Completed", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
     vi.mocked(invoke).mockResolvedValueOnce({
       output_folder: "/media/output",
       guidelines: "",
@@ -424,39 +603,14 @@ describe("DetailModal", () => {
 
     render(() => <DetailModal />);
 
-    fireEvent.click(screen.getByText("Reprocess File"));
-    await confirmDialogConfig()!.onConfirm();
+    fireEvent.click(screen.getByText("Reset Status"));
 
     await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("delete_output_file", {
-        outputPath: mockFile.output_path,
-      });
       expect(invoke).toHaveBeenCalledWith("reset_file", { fileId: mockFile.id });
-      expect(reviewModalOpen()).toBe(true);
       expect(detailModalOpen()).toBe(false);
+      expect(reviewModalOpen()).toBe(true);
       expect(selectedFileId()).toBe(mockFile.id);
     });
-  });
-
-  it("does not reset or hand off when delete_output_file fails", async () => {
-    const mockFile = createMockFile();
-    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
-    setSelectedFileId(mockFile.id);
-    setDetailModalOpen(true);
-
-    const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockClear();
-    vi.mocked(invoke).mockRejectedValueOnce(new Error("delete failed"));
-
-    render(() => <DetailModal />);
-
-    fireEvent.click(screen.getByText("Reprocess File"));
-    await confirmDialogConfig()!.onConfirm();
-
-    expect(invoke).not.toHaveBeenCalledWith("reset_file", { fileId: mockFile.id });
-    expect(detailModalOpen()).toBe(true);
-    expect(reviewModalOpen()).toBe(false);
-    expect(selectedFileId()).toBe(mockFile.id);
   });
 
 

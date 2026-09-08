@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { displayFileStatus, isStartEligible } from "./queueReadiness";
+import { displayFileStatus, isStartEligible, isAddable } from "./queueReadiness";
 import type { FileStatus } from "../types";
 
 describe("displayFileStatus", () => {
@@ -34,5 +34,40 @@ describe("isStartEligible", () => {
     expect(isStartEligible({ is_approved: true, status: "Processing" })).toBe(false);
     expect(isStartEligible({ is_approved: true, status: "Error" })).toBe(false);
     expect(isStartEligible({ is_approved: true, status: "Skipped" })).toBe(false);
+  });
+});
+
+describe("isAddable", () => {
+  it("isAddable_false_when_id_in_scheduledIds", () => {
+    expect(
+      isAddable(
+        { id: "a", is_approved: true, status: "Pending" },
+        ["a"],
+      ),
+    ).toBe(false);
+  });
+
+  it("isAddable_true_for_approved_pending_not_scheduled", () => {
+    expect(
+      isAddable(
+        { id: "a", is_approved: true, status: "Pending" },
+        ["b"],
+      ),
+    ).toBe(true);
+  });
+
+  it("isAddable_false_when_not_start_eligible", () => {
+    expect(
+      isAddable(
+        { id: "a", is_approved: false, status: "Pending" },
+        [],
+      ),
+    ).toBe(false);
+    expect(
+      isAddable(
+        { id: "a", is_approved: true, status: "Completed" },
+        [],
+      ),
+    ).toBe(false);
   });
 });
