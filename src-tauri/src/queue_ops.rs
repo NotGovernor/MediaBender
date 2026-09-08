@@ -240,6 +240,13 @@ fn find_file_mut<'a>(queue: &'a mut WorkQueue, id: &str) -> Result<&'a mut Video
         .ok_or_else(|| format!("File not found: {id}"))
 }
 
+pub fn ensure_not_frozen(status: FileStatus, in_fifo: bool) -> Result<(), String> {
+    if in_fifo || status == FileStatus::Processing {
+        return Err("File is in the encode queue".to_string());
+    }
+    Ok(())
+}
+
 pub fn approve_file(
     queue: &mut WorkQueue,
     id: &str,
@@ -255,6 +262,9 @@ pub fn approve_file(
     let file = find_file_mut(queue, id)?;
     if file.metadata.is_none() {
         return Err("File has no metadata".to_string());
+    }
+    if matches!(file.status, FileStatus::Processing | FileStatus::Completed | FileStatus::Skipped) {
+        return Err("File cannot be approved from this status".to_string());
     }
 
     file.output_path = resolve_output_path(
@@ -274,6 +284,7 @@ pub fn approve_file(
 
 pub fn unapprove_file(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
     let file = find_file_mut(queue, id)?;
+    ensure_not_frozen(file.status.clone(), false)?;
     file.is_approved = false;
     file.updated_at = chrono::Utc::now().to_rfc3339();
     Ok(())
@@ -281,6 +292,7 @@ pub fn unapprove_file(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
 
 pub fn reset_file(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
     let file = find_file_mut(queue, id)?;
+    ensure_not_frozen(file.status.clone(), false)?;
     file.status = FileStatus::Pending;
     file.is_approved = false;
     file.error_message.clear();
@@ -308,17 +320,21 @@ pub fn prepare_reprocess(queue: &mut WorkQueue, id: &str) -> Result<(), String> 
 
 pub fn skip_file(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
     let file = find_file_mut(queue, id)?;
+    ensure_not_frozen(file.status.clone(), false)?;
     file.status = FileStatus::Skipped;
     file.updated_at = chrono::Utc::now().to_rfc3339();
     Ok(())
 }
 
 pub fn remove_file(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
-    let before = queue.files.len();
+    let status = queue
+        .files
+        .iter()
+        .find(|f| f.id == id)
+        .map(|f| f.status.clone())
+        .ok_or_else(|| format!("File not found: {id}"))?;
+    ensure_not_frozen(status, false)?;
     queue.files.retain(|f| f.id != id);
-    if queue.files.len() == before {
-        return Err(format!("File not found: {id}"));
-    }
     Ok(())
 }
 
@@ -892,6 +908,45 @@ mod tests {
             "{name}.mkv",
         )
         .is_err());
+    }
+
+    #[test]
+    fn ensure_not_frozen_errors_when_in_fifo_or_processing() {
+        assert!(ensure_not_frozen(FileStatus::Pending, true).is_err());
+        assert!(ensure_not_frozen(FileStatus::Processing, false).is_err());
+        assert!(ensure_not_frozen(FileStatus::Pending, false).is_ok());
+        assert!(ensure_not_frozen(FileStatus::Completed, false).is_ok());
+    }
+
+    #[test]
+    fn approve_file_rejects_processing_completed_skipped() {
+        for status in [FileStatus::Processing, FileStatus::Completed, FileStatus::Skipped] {
+            let mut file = create_test_video_file("file1", Some(|f| {
+                f.command_args = "-c:v copy".to_string();
+                f.generated_command = "ffmpeg".to_string();
+            }));
+            file.status = status.clone();
+            let mut queue = test_queue(vec![file]);
+            assert!(approve_file(&mut queue, "file1", "-c:v copy", "/transcoded", "{name}.mkv").is_err());
+            assert_eq!(queue.files[0].status, status);
+        }
+    }
+
+    #[test]
+    fn unapprove_skip_reset_remove_reject_processing() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.status = FileStatus::Processing;
+            f.is_approved = true;
+            f.command_args = "-c:v copy".to_string();
+        }));
+        let mut queue = test_queue(vec![file.clone()]);
+        assert!(unapprove_file(&mut queue, "file1").is_err());
+        assert!(queue.files[0].is_approved);
+        assert!(skip_file(&mut queue, "file1").is_err());
+        assert_eq!(queue.files[0].status, FileStatus::Processing);
+        assert!(reset_file(&mut queue, "file1").is_err());
+        assert!(remove_file(&mut queue, "file1").is_err());
+        assert_eq!(queue.files.len(), 1);
     }
 
     #[test]

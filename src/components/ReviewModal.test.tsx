@@ -14,6 +14,7 @@ import {
   confirmDialogConfig,
   setPendingReviewRegenerateFeedback,
   pendingReviewRegenerateFeedback,
+  setScheduledIds,
 } from "../stores/appStore";
 import type { VideoFile } from "../types";
 
@@ -69,6 +70,7 @@ describe("ReviewModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setPendingReviewRegenerateFeedback(null);
+    setScheduledIds([]);
     setWorkQueue({
       output_folder: "/media/output",
       guidelines: "",
@@ -825,5 +827,70 @@ describe("ReviewModal", () => {
 
     const approveButton = screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement;
     expect(approveButton.disabled).toBe(false);
+  });
+
+  it("disables_approve_unapprove_skip_regenerate_when_file_is_scheduled", () => {
+    const approved = createMockFile({
+      id: "scheduled-approved",
+      is_approved: true,
+      status: "Pending",
+      generated_command: "ffmpeg -i input.mkv output.mkv",
+    });
+    setWorkQueue((q) => ({ ...q, files: [approved] }));
+    setSelectedFileId(approved.id);
+    setScheduledIds([approved.id]);
+    setReviewModalOpen(true);
+
+    const { unmount } = render(() => <ReviewModal />);
+
+    expect((screen.getByRole("button", { name: "Unapprove" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("Regenerate")).toBeFalsy();
+    expect(screen.queryByText("Generate")).toBeFalsy();
+
+    unmount();
+
+    const laterIdle = createMockFile({ id: "later-idle", generated_command: "" });
+    const unapproved = createMockFile({
+      id: "scheduled-unapproved",
+      is_approved: false,
+      status: "Pending",
+      generated_command: "ffmpeg -i input.mkv output.mkv",
+    });
+    setWorkQueue((q) => ({ ...q, files: [unapproved, laterIdle] }));
+    setSelectedFileId(unapproved.id);
+    setScheduledIds([unapproved.id]);
+    setReviewModalOpen(true);
+
+    render(() => <ReviewModal />);
+
+    expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(true);
+
+    const feedbackTextarea = screen.getByPlaceholderText(
+      "e.g. Use 128k bitrate instead, or add -map_chapters 0...",
+    ) as HTMLTextAreaElement;
+    fireEvent.input(feedbackTextarea, { target: { value: "Use HEVC instead" } });
+    expect((screen.getByRole("button", { name: "Regenerate" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Apply to Remaining Items") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("eligibleTargets_omits_frozen_ids", () => {
+    const source = createMockFile({
+      id: "source",
+      generated_command: "ffmpeg -i input.mkv output.mkv",
+      command_args: "-c:v copy -c:a opus",
+    });
+    const frozenTarget = createMockFile({ id: "frozen-target", generated_command: "" });
+    setWorkQueue((q) => ({ ...q, files: [source, frozenTarget] }));
+    setSelectedFileId("source");
+    setScheduledIds(["frozen-target"]);
+    setReviewModalOpen(true);
+
+    render(() => <ReviewModal />);
+
+    const button = screen.getByLabelText("Apply to Remaining Items") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.queryByText("1")).toBeFalsy();
   });
 });

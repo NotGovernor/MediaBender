@@ -15,8 +15,11 @@ import {
   setPendingReviewRegenerateFeedback,
   addGeneratingIds,
   removeGeneratingId,
+  scheduledIds,
+  patchFilesFromQueue,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
+import { isFrozen } from "../lib/queueReadiness";
 
 function formatDuration(seconds: number): string {
   if (!seconds) return "--";
@@ -41,6 +44,7 @@ function buildSubtitle(file: ReturnType<typeof selectedFile>): string {
 
 export default function ReviewModal() {
   const file = selectedFile;
+  const frozen = () => file() != null && isFrozen(file()!, scheduledIds());
   const [commandArgs, setCommandArgs] = createSignal("");
   const [feedback, setFeedback] = createSignal("");
   const [isRegenerating, setIsRegenerating] = createSignal(false);
@@ -57,13 +61,13 @@ export default function ReviewModal() {
   });
 
   const handleApprove = async () => {
-    if (!file() || file()!.generated_command === "") return;
+    if (!file() || frozen() || file()!.generated_command === "") return;
     try {
       const q = await invoke<WorkQueue>("approve_file", {
         fileId: file()!.id,
         commandArgs: commandArgs(),
       });
-      setWorkQueue(q);
+      patchFilesFromQueue(q, [file()!.id]);
       addLog({
         timestamp: new Date().toISOString(),
         level: "info",
@@ -83,7 +87,7 @@ export default function ReviewModal() {
   };
 
   const handleUnapprove = async () => {
-    if (!file()) return;
+    if (!file() || frozen()) return;
     try {
       const q = await invoke<WorkQueue>("unapprove_file", { fileId: file()!.id });
       setWorkQueue(q);
@@ -106,7 +110,7 @@ export default function ReviewModal() {
   };
 
   const regenerateWithFeedback = async (fb: string) => {
-    if (!file()) return;
+    if (!file() || frozen()) return;
     const id = file()!.id;
 
     setIsRegenerating(true);
@@ -123,7 +127,7 @@ export default function ReviewModal() {
         fileIds: [id],
         feedback: fb,
       });
-      setWorkQueue(q);
+      patchFilesFromQueue(q, [id]);
 
       addLog({
         timestamp: new Date().toISOString(),
@@ -150,7 +154,7 @@ export default function ReviewModal() {
   };
 
   const handleRegenerate = async () => {
-    if (!file()) return;
+    if (!file() || frozen()) return;
     const fb = feedback().trim();
     // For regeneration (command exists), feedback is required
     if (file()!.generated_command !== "" && !fb) return;
@@ -168,7 +172,7 @@ export default function ReviewModal() {
   });
 
   const handleSkip = async () => {
-    if (!file()) return;
+    if (!file() || frozen()) return;
     try {
       const q = await invoke<WorkQueue>("skip_file", { fileId: file()!.id });
       setWorkQueue(q);
@@ -197,12 +201,12 @@ export default function ReviewModal() {
     const currentIndex = files.findIndex((f) => f.id === current.id);
     if (currentIndex === -1) return [];
     return files.slice(currentIndex + 1).filter(
-      (f) => f.metadata !== null && f.generated_command === ""
+      (f) => f.metadata !== null && f.generated_command === "" && !isFrozen(f, scheduledIds())
     );
   };
 
   const handleApplyTemplate = () => {
-    if (!file()) return;
+    if (!file() || frozen()) return;
     const targets = eligibleTargets();
     if (targets.length === 0) return;
 
@@ -353,7 +357,8 @@ export default function ReviewModal() {
               <div class="flex gap-3">
                 <button
                   onClick={handleSkip}
-                  class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors"
+                  disabled={frozen()}
+                  class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
                   Skip
                 </button>
@@ -373,7 +378,7 @@ export default function ReviewModal() {
                       <>
                         <button
                           onClick={handleApplyTemplate}
-                          disabled={f().generated_command === "" || eligibleTargets().length === 0 || isRegenerating()}
+                          disabled={frozen() || f().generated_command === "" || eligibleTargets().length === 0 || isRegenerating()}
                           title={`Apply this command template to ${eligibleTargets().length} remaining unconfigured item${eligibleTargets().length === 1 ? "" : "s"} below`}
                           class="relative px-2 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
                           aria-label="Apply to Remaining Items"
@@ -399,7 +404,7 @@ export default function ReviewModal() {
                         </button>
                         <button
                           onClick={handleRegenerate}
-                          disabled={isRegenerating() || (f().generated_command !== "" && !feedback().trim())}
+                          disabled={frozen() || isRegenerating() || (f().generated_command !== "" && !feedback().trim())}
                           class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
                         >
                           <Show when={isRegenerating()}>
@@ -412,7 +417,7 @@ export default function ReviewModal() {
                         </button>
                         <button
                           onClick={handleApprove}
-                          disabled={f().generated_command === ""}
+                          disabled={frozen() || f().generated_command === ""}
                           class="px-4 py-2 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                         >
                           Approve
@@ -422,7 +427,8 @@ export default function ReviewModal() {
                   >
                     <button
                       onClick={handleUnapprove}
-                      class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors"
+                      disabled={frozen()}
+                      class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                     >
                       Unapprove
                     </button>

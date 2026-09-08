@@ -38,6 +38,22 @@ fn persist_queue(store: &JsonFileStore, queue: &mut WorkQueue) -> Result<WorkQue
     Ok(queue.clone())
 }
 
+async fn file_in_fifo(state: &AppState, id: &str) -> bool {
+    state.job_fifo.fifo.lock().await.contains(id)
+}
+
+async fn ensure_id_not_frozen(state: &AppState, id: &str) -> Result<(), String> {
+    let in_fifo = file_in_fifo(state, id).await;
+    let status = {
+        let queue = state.queue.lock().await;
+        queue.files.iter().find(|f| f.id == id).map(|f| f.status.clone())
+    };
+    match status {
+        Some(status) => queue_ops::ensure_not_frozen(status, in_fifo),
+        None => Ok(()), // let the mutator return File not found
+    }
+}
+
 fn active_provider_or_err(settings: &AppSettings) -> Result<AiProviderConfig, String> {
     let provider = settings
         .providers
@@ -85,6 +101,7 @@ async fn add_paths(
 
 #[tauri::command]
 async fn remove_file(file_id: String, state: tauri::State<'_, AppState>) -> Result<WorkQueue, String> {
+    ensure_id_not_frozen(&state, &file_id).await?;
     let mut queue = state.queue.lock().await;
     remove_file_impl(&mut queue, &file_id)?;
     persist_queue(&state.store, &mut queue)
@@ -107,6 +124,7 @@ async fn approve_file(
         let settings = state.settings.lock().await;
         (settings.default_output_folder.clone(), settings.naming_template.clone())
     };
+    ensure_id_not_frozen(&state, &file_id).await?;
     let mut queue = state.queue.lock().await;
     approve_file_impl(&mut queue, &file_id, &command_args, &output_folder, &naming_template)?;
     persist_queue(&state.store, &mut queue)
@@ -114,6 +132,7 @@ async fn approve_file(
 
 #[tauri::command]
 async fn unapprove_file(file_id: String, state: tauri::State<'_, AppState>) -> Result<WorkQueue, String> {
+    ensure_id_not_frozen(&state, &file_id).await?;
     let mut queue = state.queue.lock().await;
     unapprove_file_impl(&mut queue, &file_id)?;
     persist_queue(&state.store, &mut queue)
@@ -121,6 +140,7 @@ async fn unapprove_file(file_id: String, state: tauri::State<'_, AppState>) -> R
 
 #[tauri::command]
 async fn skip_file(file_id: String, state: tauri::State<'_, AppState>) -> Result<WorkQueue, String> {
+    ensure_id_not_frozen(&state, &file_id).await?;
     let mut queue = state.queue.lock().await;
     skip_file_impl(&mut queue, &file_id)?;
     persist_queue(&state.store, &mut queue)
@@ -128,6 +148,7 @@ async fn skip_file(file_id: String, state: tauri::State<'_, AppState>) -> Result
 
 #[tauri::command]
 async fn reset_file(file_id: String, state: tauri::State<'_, AppState>) -> Result<WorkQueue, String> {
+    ensure_id_not_frozen(&state, &file_id).await?;
     let mut queue = state.queue.lock().await;
     reset_file_impl(&mut queue, &file_id)?;
     persist_queue(&state.store, &mut queue)
@@ -188,7 +209,22 @@ async fn generate_commands(
         (provider, output_folder, naming_template, guidelines, snapshots)
     }; // mutexes released before HTTP
 
-    for snapshot in snapshots {
+    let mut allowed = Vec::new();
+    for snap in snapshots {
+        if ensure_id_not_frozen(&state, &snap.id).await.is_err() {
+            if feedback.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+                return Err("File is in the encode queue".into());
+            }
+            continue;
+        }
+        allowed.push(snap);
+    }
+    if allowed.is_empty() {
+        let queue = state.queue.lock().await;
+        return Ok(queue.clone());
+    }
+
+    for snapshot in allowed {
         let results = generate_commands_snapshots(
             vec![snapshot],
             feedback.clone(),
@@ -199,7 +235,21 @@ async fn generate_commands(
         )
         .await?;
         for updated in results {
+            if ensure_id_not_frozen(&state, &updated.id).await.is_err() {
+                continue;
+            }
             let mut queue = state.queue.lock().await;
+            // Skip/reset/remove can win during HTTP; do not restore Pending + command.
+            let live_ok = match queue.files.iter().find(|f| f.id == updated.id) {
+                Some(live) => !matches!(
+                    live.status,
+                    FileStatus::Skipped | FileStatus::Completed | FileStatus::Processing
+                ),
+                None => false,
+            };
+            if !live_ok {
+                continue;
+            }
             merge_generated_file(&mut queue, &updated);
             persist_queue(&state.store, &mut queue)?;
             drop(queue);
@@ -217,12 +267,19 @@ async fn apply_command_template(
     target_ids: Vec<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkQueue, String> {
+    ensure_id_not_frozen(&state, &source_id).await?;
+    let mut allowed_targets = Vec::new();
+    for id in target_ids {
+        if ensure_id_not_frozen(&state, &id).await.is_ok() {
+            allowed_targets.push(id);
+        }
+    }
     let (output_folder, naming_template) = {
         let settings = state.settings.lock().await;
         (settings.default_output_folder.clone(), settings.naming_template.clone())
     };
     let mut queue = state.queue.lock().await;
-    apply_command_template_impl(&mut queue, &output_folder, &naming_template, &source_id, &target_ids)?;
+    apply_command_template_impl(&mut queue, &output_folder, &naming_template, &source_id, &allowed_targets)?;
     persist_queue(&state.store, &mut queue)
 }
 

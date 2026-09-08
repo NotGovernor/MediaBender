@@ -24,8 +24,9 @@ import {
   scheduledIds,
   setScheduledIds,
   isPipelineActive,
+  patchFilesFromQueue,
 } from "./appStore";
-import { createMockFile } from "../test-helpers";
+import { createMockFile, createMockQueue } from "../test-helpers";
 
 describe("appStore processing helpers", () => {
   beforeEach(() => {
@@ -68,6 +69,21 @@ describe("appStore processing helpers", () => {
     expect(files.find((f) => f.id === "b")!.status).toBe("Pending");
     expect(files.find((f) => f.id === "c")!.status).toBe("Completed");
     expect(files.find((f) => f.id === "d")!.status).toBe("Error");
+  });
+
+  it("patchFilesFromQueue_updates_only_named_ids", () => {
+    const a = createMockFile({ id: "a", status: "Processing", generated_command: "old-a" });
+    const b = createMockFile({ id: "b", status: "Pending", generated_command: "" });
+    setWorkQueue((q) => ({ ...q, files: [a, b] }));
+    const returned = createMockQueue([
+      { ...a, status: "Pending", generated_command: "stale-a" },
+      { ...b, generated_command: "new-b", command_args: "-c:v copy" },
+    ]);
+    patchFilesFromQueue(returned, ["b"]);
+    const files = workQueue().files;
+    expect(files.find((f) => f.id === "a")!.status).toBe("Processing");
+    expect(files.find((f) => f.id === "a")!.generated_command).toBe("old-a");
+    expect(files.find((f) => f.id === "b")!.generated_command).toBe("new-b");
   });
 });
 

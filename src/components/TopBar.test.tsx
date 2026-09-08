@@ -174,15 +174,40 @@ describe("TopBar", () => {
     });
   });
 
-  it("disables_Start_while_generatingIds_non_empty", () => {
+  it("keeps_Start_enabled_while_generating_if_other_rows_are_addable", () => {
     const fileA = createMockFile({ id: "a", status: "Pending", is_approved: true });
     setWorkQueue((q) => ({ ...q, files: [fileA] }));
     addGeneratingIds(["z"]);
+    render(() => <TopBar />);
+    const startButton = screen.getByRole("button", { name: /Start Processing/ }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(false);
+  });
+
+  it("enables_Generate_while_Processing_if_idle_rows_need_commands", () => {
+    const live = createMockFile({ id: "live", status: "Processing", is_approved: true });
+    const idle = createMockFile({ id: "idle", status: "Pending", generated_command: "" });
+    setWorkQueue((q) => ({ ...q, files: [live, idle] }));
 
     render(() => <TopBar />);
 
-    const startButton = screen.getByRole("button", { name: /Start Processing/ }) as HTMLButtonElement;
-    expect(startButton.disabled).toBe(true);
+    const generateButton = screen.getByText("Generate Commands") as HTMLButtonElement;
+    expect(generateButton.disabled).toBe(false);
+  });
+
+  it("disables_Approve_All_for_frozen_or_completed_rows", () => {
+    const fileA = createMockFile({
+      id: "a",
+      status: "Pending",
+      is_approved: false,
+      generated_command: "cmd",
+    });
+    setWorkQueue((q) => ({ ...q, files: [fileA] }));
+    setScheduledIds(["a"]);
+
+    render(() => <TopBar />);
+
+    const approveAllButton = screen.getByText("Approve All") as HTMLButtonElement;
+    expect(approveAllButton.disabled).toBe(true);
   });
 
   it("disables Approve All when no items have a generated command and are unapproved", () => {
@@ -435,6 +460,42 @@ describe("TopBar", () => {
     expect(screen.getByText("Stop")).toBeTruthy();
     const addButton = screen.getByRole("button", { name: /Add to Queue/ }) as HTMLButtonElement;
     expect(addButton.textContent).toBe("Add to Queue (1)");
+  });
+
+  it("Generate_does_not_replace_untouched_Processing_row_from_invoke_result", async () => {
+    const live = createMockFile({
+      id: "live",
+      status: "Processing",
+      is_approved: true,
+    });
+    const idle = createMockFile({
+      id: "idle",
+      status: "Pending",
+      generated_command: "",
+    });
+    setWorkQueue((q) => ({ ...q, files: [live, idle] }));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(
+      createMockQueue([
+        { ...live, status: "Pending" },
+        {
+          ...idle,
+          generated_command: "ffmpeg -i input.mkv output.mkv",
+          command_args: "-c:v copy",
+        },
+      ]),
+    );
+
+    render(() => <TopBar />);
+
+    fireEvent.click(screen.getByText("Generate Commands"));
+
+    await waitFor(() => {
+      const files = workQueue().files;
+      expect(files.find((f) => f.id === "live")!.status).toBe("Processing");
+      expect(files.find((f) => f.id === "idle")!.command_args).toBe("-c:v copy");
+    });
   });
 
   it("Add_to_Queue_invokes_start_processing_with_unscheduled_ids_only", async () => {

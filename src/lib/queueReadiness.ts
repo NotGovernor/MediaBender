@@ -23,3 +23,37 @@ export function isAddable(
 ): boolean {
   return isStartEligible(file) && !scheduledIds.includes(file.id);
 }
+
+export function isFrozen(
+  file: { id: string; status: FileStatus },
+  scheduledIds: readonly string[],
+): boolean {
+  return file.status === "Processing" || scheduledIds.includes(file.id);
+}
+
+export function isApprovable(
+  file: {
+    id: string;
+    generated_command: string;
+    is_approved: boolean;
+    status: FileStatus;
+  },
+  scheduledIds: readonly string[],
+): boolean {
+  if (file.generated_command === "" || file.is_approved) return false;
+  if (file.status === "Completed" || file.status === "Skipped") return false;
+  return !isFrozen(file, scheduledIds);
+}
+
+export function isGenerateTarget(
+  file: {
+    id: string;
+    status: FileStatus;
+    metadata: unknown;
+    generated_command: string;
+  },
+  scheduledIds: readonly string[],
+): boolean {
+  if (!file.metadata || file.generated_command) return false;
+  return !isFrozen(file, scheduledIds);
+}

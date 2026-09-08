@@ -12,6 +12,7 @@ import {
   workQueue,
   addGeneratingIds,
   clearGeneratingIds,
+  setScheduledIds,
 } from "../stores/appStore";
 import type { VideoFile } from "../types";
 
@@ -76,6 +77,7 @@ describe("FileTable", () => {
     setSelectedFileId(null);
     setFileDropHovering(false);
     clearGeneratingIds();
+    setScheduledIds([]);
   });
 
   it("empty_state_mentions_drop_files_or_folders", () => {
@@ -242,5 +244,15 @@ describe("FileTable", () => {
     expect(screen.getByText("Generating")).toBeTruthy();
     expect(screen.queryByText("Pending")).toBeFalsy();
     expect(workQueue().files[0].status).toBe("Pending");
+  });
+
+  it("disables_remove_when_row_is_scheduled_or_Processing", () => {
+    const live = createMockFile({ id: "live", status: "Processing" });
+    const wait = createMockFile({ id: "wait", status: "Pending", is_approved: true });
+    setWorkQueue((q) => ({ ...q, files: [live, wait] }));
+    setScheduledIds(["wait"]);
+    render(() => <FileTable />);
+    const buttons = screen.getAllByTitle("Remove from queue") as HTMLButtonElement[];
+    expect(buttons.every((b) => b.disabled)).toBe(true);
   });
 });

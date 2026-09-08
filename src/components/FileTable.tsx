@@ -11,9 +11,10 @@ import {
   addLog,
   isFileDropHovering,
   generatingIds,
+  scheduledIds,
 } from "../stores/appStore";
 import type { VideoFile, FileStatus, WorkQueue } from "../types";
-import { isStartEligible } from "../lib/queueReadiness";
+import { isStartEligible, isFrozen } from "../lib/queueReadiness";
 
 function formatDuration(seconds: number): string {
   if (!seconds) return "--";
@@ -68,6 +69,7 @@ function handleRowClick(file: VideoFile) {
 }
 
 async function handleRemove(file: VideoFile) {
+  if (isFrozen(file, scheduledIds())) return;
   try {
     const q = await invoke<WorkQueue>("remove_file", { fileId: file.id });
     setWorkQueue(q);
@@ -154,6 +156,7 @@ export default function FileTable() {
                         e.stopPropagation();
                         void handleRemove(file);
                       }}
+                      disabled={isFrozen(file, scheduledIds())}
                       class="text-text-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity"
                       title="Remove from queue"
                     >

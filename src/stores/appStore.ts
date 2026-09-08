@@ -63,6 +63,19 @@ export function updateFile(fileId: string, updates: Partial<VideoFile>) {
   }));
 }
 
+export function patchFilesFromQueue(returned: WorkQueue, ids: readonly string[]) {
+  const idSet = new Set(ids);
+  setWorkQueue((q) => ({
+    ...q,
+    files: q.files.map((f) => {
+      if (!idSet.has(f.id)) return f;
+      const updated = returned.files.find((x) => x.id === f.id);
+      return updated ?? f;
+    }),
+    last_modified: returned.last_modified || q.last_modified,
+  }));
+}
+
 export function updateQueue(updates: Partial<WorkQueue>) {
   setWorkQueue((q) => ({
     ...q,

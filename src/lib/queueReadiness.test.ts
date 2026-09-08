@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { displayFileStatus, isStartEligible, isAddable } from "./queueReadiness";
+import {
+  displayFileStatus,
+  isStartEligible,
+  isAddable,
+  isFrozen,
+  isApprovable,
+  isGenerateTarget,
+} from "./queueReadiness";
+import { createMockFile } from "../test-helpers";
 import type { FileStatus } from "../types";
 
 describe("displayFileStatus", () => {
@@ -66,6 +74,105 @@ describe("isAddable", () => {
     expect(
       isAddable(
         { id: "a", is_approved: true, status: "Completed" },
+        [],
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isFrozen", () => {
+  it("true_when_Processing_even_if_not_scheduled", () => {
+    expect(isFrozen({ id: "a", status: "Processing" }, [])).toBe(true);
+  });
+
+  it("true_when_id_in_scheduledIds_even_if_Pending", () => {
+    expect(isFrozen({ id: "a", status: "Pending" }, ["a"])).toBe(true);
+  });
+
+  it("false_for_idle_pending", () => {
+    expect(isFrozen({ id: "a", status: "Pending" }, ["b"])).toBe(false);
+  });
+});
+
+describe("isApprovable", () => {
+  const base = {
+    id: "a",
+    generated_command: "ffmpeg",
+    is_approved: false,
+    status: "Pending" as const,
+  };
+
+  it("true_for_unapproved_pending_with_command", () => {
+    expect(isApprovable(base, [])).toBe(true);
+  });
+
+  it("false_when_frozen_or_completed_or_skipped_or_already_approved_or_no_command", () => {
+    expect(isApprovable({ ...base, status: "Processing" }, [])).toBe(false);
+    expect(isApprovable(base, ["a"])).toBe(false);
+    expect(isApprovable({ ...base, status: "Completed" }, [])).toBe(false);
+    expect(isApprovable({ ...base, status: "Skipped" }, [])).toBe(false);
+    expect(isApprovable({ ...base, is_approved: true }, [])).toBe(false);
+    expect(isApprovable({ ...base, generated_command: "" }, [])).toBe(false);
+  });
+
+  it("true_for_unapproved_Error_with_command", () => {
+    expect(isApprovable({ ...base, status: "Error" }, [])).toBe(true);
+  });
+});
+
+describe("isGenerateTarget", () => {
+  it("true_when_metadata_and_no_command_and_not_frozen", () => {
+    expect(
+      isGenerateTarget(
+        createMockFile({
+          id: "a",
+          status: "Pending",
+          generated_command: "",
+        }),
+        [],
+      ),
+    ).toBe(true);
+  });
+
+  it("false_when_has_command_or_frozen_or_no_metadata", () => {
+    expect(
+      isGenerateTarget(
+        createMockFile({
+          id: "a",
+          status: "Pending",
+          generated_command: "ffmpeg",
+        }),
+        [],
+      ),
+    ).toBe(false);
+    expect(
+      isGenerateTarget(
+        createMockFile({
+          id: "a",
+          status: "Processing",
+          generated_command: "",
+        }),
+        [],
+      ),
+    ).toBe(false);
+    expect(
+      isGenerateTarget(
+        createMockFile({
+          id: "a",
+          status: "Pending",
+          generated_command: "",
+        }),
+        ["a"],
+      ),
+    ).toBe(false);
+    expect(
+      isGenerateTarget(
+        createMockFile({
+          id: "a",
+          status: "Pending",
+          generated_command: "",
+          metadata: null,
+        }),
         [],
       ),
     ).toBe(false);

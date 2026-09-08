@@ -20,6 +20,7 @@ import {
   isGenerating,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
+import { isFrozen } from "../lib/queueReadiness";
 
 function formatSize(bytes: number): string {
   if (!bytes) return "Unknown";
@@ -279,6 +280,7 @@ export default function DetailModal() {
             <div class="flex justify-between items-center pt-2">
               <button
                 onClick={handleResetStatus}
+                disabled={file() != null && isFrozen(file()!, scheduledIds())}
                 class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors"
               >
                 Reset Status

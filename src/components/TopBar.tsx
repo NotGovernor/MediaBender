@@ -6,7 +6,7 @@ import {
   addGeneratingIds,
   clearGeneratingIds,
   workQueue,
-  setWorkQueue,
+  patchFilesFromQueue,
   settings,
   addLog,
   setPreflightModalOpen,
@@ -15,20 +15,20 @@ import {
   isPipelineActive,
 } from "../stores/appStore";
 import type { WorkQueue } from "../types";
-import { isAddable } from "../lib/queueReadiness";
+import { isAddable, isApprovable, isGenerateTarget } from "../lib/queueReadiness";
 
 export default function TopBar() {
   const addableCount = () =>
     workQueue().files.filter((f) => isAddable(f, scheduledIds())).length;
-  const analyzedCount = () =>
-    workQueue().files.filter((f) => f.metadata && !f.generated_command).length;
+  const generateTargetCount = () =>
+    workQueue().files.filter((f) => isGenerateTarget(f, scheduledIds())).length;
   const processingCount = () =>
     workQueue().files.filter((f) => f.status === "Processing").length;
   const eligibleForApproval = () =>
-    workQueue().files.filter((f) => f.generated_command !== "" && !f.is_approved).length;
+    workQueue().files.filter((f) => isApprovable(f, scheduledIds())).length;
 
   const handleApproveAll = async () => {
-    const eligible = workQueue().files.filter((f) => f.generated_command !== "" && !f.is_approved);
+    const eligible = workQueue().files.filter((f) => isApprovable(f, scheduledIds()));
     let approved = 0;
     for (const file of eligible) {
       try {
@@ -36,7 +36,7 @@ export default function TopBar() {
           fileId: file.id,
           commandArgs: file.command_args,
         });
-        setWorkQueue(q);
+        patchFilesFromQueue(q, [file.id]);
         approved += 1;
       } catch (err) {
         addLog({
@@ -77,7 +77,7 @@ export default function TopBar() {
     }
 
     const analyzedWithoutCommand = workQueue().files
-      .filter((f) => f.metadata && !f.generated_command)
+      .filter((f) => isGenerateTarget(f, scheduledIds()))
       .map((f) => f.id);
 
     if (analyzedWithoutCommand.length === 0) {
@@ -101,7 +101,7 @@ export default function TopBar() {
         fileIds: analyzedWithoutCommand,
         feedback: null,
       });
-      setWorkQueue(q);
+      patchFilesFromQueue(q, analyzedWithoutCommand);
 
       const generatedCount = q.files.filter(
         (f) => analyzedWithoutCommand.includes(f.id) && f.generated_command
@@ -203,7 +203,7 @@ export default function TopBar() {
 
       <button
         onClick={handleGenerate}
-        disabled={isProcessing() || isGenerating() || analyzedCount() === 0}
+        disabled={isGenerating() || generateTargetCount() === 0}
         class="px-4 py-1.5 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
       >
         <Show when={isGenerating()}>
@@ -226,7 +226,7 @@ export default function TopBar() {
       <Show when={!(isPipelineActive() && addableCount() === 0)}>
         <button
           onClick={handleStart}
-          disabled={addableCount() === 0 || isGenerating()}
+          disabled={addableCount() === 0}
           class="px-4 py-1.5 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isPipelineActive()
