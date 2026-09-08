@@ -1,6 +1,6 @@
 {
   "name": "mediabender",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "AI-assisted FFmpeg video transcoding",
   "type": "module",
   "scripts": {

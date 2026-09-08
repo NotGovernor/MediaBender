@@ -103,6 +103,7 @@ export interface AppSettings {
   naming_template: string;
   max_parallel: number;
   check_updates_on_startup: boolean;
+  flatten_output_folders: boolean;
 }
 
 export type View = "dashboard" | "settings" | "guidelines";

@@ -106,16 +106,20 @@ pub(crate) fn split_args(input: &str) -> Vec<String> {
     result
 }
 
-/// Resolves the output path for a transcoded file, preserving directory structure.
+/// Resolves the output path for a transcoded file, preserving directory structure
+/// unless `flatten` is true.
 ///
 /// Given:
 /// - `scan_root`: The root directory that was scanned
 /// - `input_path`: The full path to the input file
 /// - `output_folder`: The base output directory (empty = same directory as input)
 /// - `naming_template`: Template for the output filename (empty = "{name}.mkv")
+/// - `flatten`: When true, ignore the preserved relative directory and write the
+///   file directly under `output_folder`. When false, keep today's relative-dir
+///   logic. Does not uniquify collisions and does not prepend `scan_root`'s basename.
 ///
 /// Returns the full output path with the same relative directory structure as the
-/// input, rooted at `output_folder`.
+/// input, rooted at `output_folder` (or flat under `output_folder` if `flatten`).
 ///
 /// Template substitutions:
 /// - `{name}` → filename without extension
@@ -127,6 +131,7 @@ pub fn resolve_output_path(
     input_path: &str,
     output_folder: &str,
     naming_template: &str,
+    flatten: bool,
 ) -> String {
     // Normalize all paths to use forward slashes
     let scan_root = normalize_path(scan_root);
@@ -162,16 +167,27 @@ pub fn resolve_output_path(
         .replace("{ext}", ext);
 
     // Compute relative directory from scan_root to input's parent
+    // A file at Unix `/clip.mkv` has its only slash at index 0; treat parent as `/`
+    // so scan_root "/" does not look like a mismatch.
     let input_dir = if let Some(last_slash) = input_path.rfind('/') {
-        &input_path[..last_slash]
+        if last_slash == 0 {
+            "/"
+        } else {
+            &input_path[..last_slash]
+        }
     } else {
         ""
     };
 
-    let relative_dir = if scan_root.is_empty() {
+    let relative_dir = if flatten {
+        ""
+    } else if scan_root.is_empty() {
         ""
     } else if input_dir == scan_root {
         ""
+    } else if scan_root == "/" && input_dir.starts_with('/') {
+        // `format!("{}/", "/")` is "//" and would miss `/Movies/...`.
+        &input_dir[1..]
     } else if input_dir.starts_with(&format!("{}/", scan_root)) {
         &input_dir[scan_root.len() + 1..]
     } else {
@@ -204,10 +220,19 @@ pub fn resolve_output_path(
 }
 
 /// Normalizes a path string to use forward slashes and removes trailing slashes.
+/// Unix `/` is kept (it is a real scan root); empty input stays empty.
 fn normalize_path(path: &str) -> String {
-    path.replace('\\', "/")
-        .trim_end_matches('/')
-        .to_string()
+    let replaced = path.replace('\\', "/");
+    let trimmed = replaced.trim_end_matches('/');
+    if trimmed.is_empty() {
+        if replaced.starts_with('/') {
+            "/".to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Windows FFmpeg argv form. UNC `//server/share` → `\\server\share`.
@@ -409,13 +434,14 @@ mod tests {
             "/media/TV/Show/Season 01/Episode.mkv",
             "/transcoded",
             "{name}.mkv",
+            false
         );
         assert_eq!(path, "/transcoded/Show/Season 01/Episode.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_flat_structure() {
-        let path = resolve_output_path("/media/TV", "/media/TV/video.mkv", "/transcoded", "{name}.mkv");
+        let path = resolve_output_path("/media/TV", "/media/TV/video.mkv", "/transcoded", "{name}.mkv", false);
         assert_eq!(path, "/transcoded/video.mkv");
     }
 
@@ -427,6 +453,7 @@ mod tests {
             "/media/movies/single.mkv",
             "/transcoded",
             "{name}.mkv",
+            false
         );
         assert_eq!(path, "/transcoded/single.mkv");
     }
@@ -438,19 +465,20 @@ mod tests {
             "C:\\Users\\Videos\\Show\\Episode.mkv",
             "D:\\Transcoded",
             "{name}.mkv",
+            false
         );
         assert_eq!(path, "D:/Transcoded/Show/Episode.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_template_with_ext() {
-        let path = resolve_output_path("/media", "/media/video.mp4", "/out", "{name}_transcoded.{ext}");
+        let path = resolve_output_path("/media", "/media/video.mp4", "/out", "{name}_transcoded.{ext}", false);
         assert_eq!(path, "/out/video_transcoded.mp4");
     }
 
     #[test]
     fn test_resolve_output_path_no_template_var() {
-        let path = resolve_output_path("/media", "/media/video.mkv", "/out", "fixed_name.mkv");
+        let path = resolve_output_path("/media", "/media/video.mkv", "/out", "fixed_name.mkv", false);
         assert_eq!(path, "/out/fixed_name.mkv");
     }
 
@@ -461,31 +489,32 @@ mod tests {
             "/media/A/B/C/D/E/video.mkv",
             "/out",
             "{name}.mkv",
+            false
         );
         assert_eq!(path, "/out/A/B/C/D/E/video.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_trailing_slashes() {
-        let path = resolve_output_path("/media/", "/media/video.mkv", "/out/", "{name}.mkv");
+        let path = resolve_output_path("/media/", "/media/video.mkv", "/out/", "{name}.mkv", false);
         assert_eq!(path, "/out/video.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_empty_scan_root() {
-        let path = resolve_output_path("", "/media/video.mkv", "/out", "{name}.mkv");
+        let path = resolve_output_path("", "/media/video.mkv", "/out", "{name}.mkv", false);
         assert_eq!(path, "/out/video.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_file_not_under_scan_root() {
-        let path = resolve_output_path("/media/TV", "/other/path/video.mkv", "/out", "{name}.mkv");
+        let path = resolve_output_path("/media/TV", "/other/path/video.mkv", "/out", "{name}.mkv", false);
         assert_eq!(path, "/out/video.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_no_extension() {
-        let path = resolve_output_path("/media", "/media/video", "/out", "{name}.{ext}");
+        let path = resolve_output_path("/media", "/media/video", "/out", "{name}.{ext}", false);
         assert_eq!(path, "/out/video.mkv");
     }
 
@@ -494,38 +523,38 @@ mod tests {
         // Empty output_folder defaults to the input's parent directory.
         // With template "{name}.mkv" this resolves to the same path as the
         // input, so the collision guard appends "_transcoded".
-        let path = resolve_output_path("/media", "/media/video.mkv", "", "{name}.mkv");
+        let path = resolve_output_path("/media", "/media/video.mkv", "", "{name}.mkv", false);
         assert_eq!(path, "/media/video_transcoded.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_empty_naming_template() {
-        let path = resolve_output_path("/media", "/media/video.mkv", "/out", "");
+        let path = resolve_output_path("/media", "/media/video.mkv", "/out", "", false);
         assert_eq!(path, "/out/video.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_collision_guard_same_path() {
-        let path = resolve_output_path("/media", "/media/video.mkv", "", "{name}.mkv");
+        let path = resolve_output_path("/media", "/media/video.mkv", "", "{name}.mkv", false);
         assert_eq!(path, "/media/video_transcoded.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_collision_guard_different_folder() {
-        let path = resolve_output_path("/media", "/media/video.mkv", "/transcoded", "{name}.mkv");
+        let path = resolve_output_path("/media", "/media/video.mkv", "/transcoded", "{name}.mkv", false);
         assert_eq!(path, "/transcoded/video.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_collision_guard_different_filename() {
-        let path = resolve_output_path("/media", "/media/video.mkv", "/media", "{name}_backup.mkv");
+        let path = resolve_output_path("/media", "/media/video.mkv", "/media", "{name}_backup.mkv", false);
         assert_eq!(path, "/media/video_backup.mkv");
     }
 
     #[test]
     fn test_resolve_output_path_collision_guard_no_extension() {
         // Template {name} produces output filename "video", matching input path exactly
-        let path = resolve_output_path("/media", "/media/video", "", "{name}");
+        let path = resolve_output_path("/media", "/media/video", "", "{name}", false);
         assert_eq!(path, "/media/video_transcoded");
     }
 
@@ -539,6 +568,7 @@ mod tests {
             "/media/Show/Season 01/Episode.mkv",
             "",
             "{name}.mkv",
+            false
         );
         assert_eq!(path, "/media/Show/Season 01/Episode_transcoded.mkv");
     }
@@ -550,6 +580,7 @@ mod tests {
             "C:\\Users\\Videos\\Episode.mkv",
             "",
             "{name}.mkv",
+            false
         );
         assert_eq!(path, "C:/Users/Videos/Episode_transcoded.mkv");
     }
@@ -561,6 +592,7 @@ mod tests {
             "/media/日本語/番組/エピソード.mkv",
             "/out",
             "{name}.mkv",
+            false
         );
         assert_eq!(path, "/out/番組/エピソード.mkv");
     }
@@ -572,6 +604,7 @@ mod tests {
             r"\\socrates\Movies\Hellboy\1\Hellboy.mkv",
             r"\\socrates\TheChasm\Media\MoviesTemp",
             "{name}.mkv",
+            false
         );
         assert_eq!(
             path,
@@ -586,11 +619,92 @@ mod tests {
             r"J:\Movies\Hellboy\1\Hellboy.mkv",
             r"\\socrates\TheChasm\Media\MoviesTemp",
             "{name}.mkv",
+            false
         );
         assert_eq!(
             path,
             "//socrates/TheChasm/Media/MoviesTemp/1/Hellboy.mkv"
         );
+    }
+
+    #[test]
+    fn test_resolve_output_path_flatten_true() {
+        let path = resolve_output_path(
+            "/media",
+            "/media/TV/Show/Season 01/Episode.mkv",
+            "/transcoded",
+            "{name}.mkv",
+            true,
+        );
+        assert_eq!(path, "/transcoded/Episode.mkv");
+    }
+
+    #[test]
+    fn test_resolve_output_path_flatten_false() {
+        let path = resolve_output_path(
+            "/media",
+            "/media/TV/Show/Season 01/Episode.mkv",
+            "/transcoded",
+            "{name}.mkv",
+            false,
+        );
+        assert_eq!(path, "/transcoded/TV/Show/Season 01/Episode.mkv");
+    }
+
+    #[test]
+    fn test_resolve_output_path_include_root_via_parent_scan_root() {
+        let path = resolve_output_path(
+            "/media",
+            "/media/TV/video.mkv",
+            "/transcoded",
+            "{name}.mkv",
+            false,
+        );
+        assert_eq!(path, "/transcoded/TV/video.mkv");
+    }
+
+    #[test]
+    fn test_resolve_output_path_loose_file() {
+        let path = resolve_output_path(
+            "/media/movies",
+            "/media/movies/single.mkv",
+            "/transcoded",
+            "{name}.mkv",
+            false,
+        );
+        assert_eq!(path, "/transcoded/single.mkv");
+    }
+
+    #[test]
+    fn test_resolve_output_path_unix_root_scan_root_keeps_first_component() {
+        // Linux/macOS: adding /Movies stores scan_root "/". That must not
+        // collapse to empty (normalize used to trim "/" to "").
+        let path = resolve_output_path(
+            "/",
+            "/Movies/Show/ep.mkv",
+            "/transcoded",
+            "{name}.mkv",
+            false,
+        );
+        assert_eq!(path, "/transcoded/Movies/Show/ep.mkv");
+    }
+
+    #[test]
+    fn test_resolve_output_path_unix_root_file_at_root_stays_flat() {
+        let path = resolve_output_path("/", "/clip.mkv", "/transcoded", "{name}.mkv", false);
+        assert_eq!(path, "/transcoded/clip.mkv");
+    }
+
+    #[test]
+    fn test_resolve_output_path_windows_drive_root_scan_root_keeps_folder() {
+        let path = resolve_output_path(
+            r"C:\",
+            r"C:\Shows\Season 01\ep.mkv",
+            r"D:\out",
+            "{name}.mkv",
+            false,
+        );
+        assert_eq!(path, "D:/out/Shows/Season 01/ep.mkv");
     }
 
     #[test]

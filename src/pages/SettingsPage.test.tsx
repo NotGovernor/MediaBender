@@ -36,6 +36,7 @@ describe("SettingsPage provider card header", () => {
       naming_template: "{name}.mkv",
       max_parallel: 1,
       check_updates_on_startup: true,
+      flatten_output_folders: false,
     });
   });
 
@@ -74,6 +75,7 @@ describe("SettingsPage provider input focus", () => {
       naming_template: "{name}.mkv",
       max_parallel: 1,
       check_updates_on_startup: true,
+      flatten_output_folders: false,
     });
   });
 
@@ -118,6 +120,7 @@ describe("SettingsPage Verify FFmpeg", () => {
       naming_template: "{name}.mkv",
       max_parallel: 1,
       check_updates_on_startup: true,
+      flatten_output_folders: false,
     });
   });
 
@@ -153,6 +156,7 @@ describe("SettingsPage Execution updates", () => {
       naming_template: "{name}.mkv",
       max_parallel: 1,
       check_updates_on_startup: true,
+      flatten_output_folders: false,
     });
     setAppVersion("");
     setAvailableUpdateVersion(null);
@@ -224,6 +228,7 @@ describe("SettingsPage Execution max parallel", () => {
       naming_template: "{name}.mkv",
       max_parallel: 1,
       check_updates_on_startup: true,
+      flatten_output_folders: false,
     });
     setAppVersion("");
     setAvailableUpdateVersion(null);
@@ -275,6 +280,7 @@ describe("SettingsPage Execution max parallel", () => {
       naming_template: "{name}.mkv",
       max_parallel: 1,
       check_updates_on_startup: true,
+      flatten_output_folders: false,
     });
   });
 
@@ -302,5 +308,64 @@ describe("SettingsPage Execution max parallel", () => {
       });
     });
     expect(settings().max_parallel).toBe(3);
+  });
+});
+
+describe("SettingsPage File Handling", () => {
+  beforeEach(() => {
+    setSettings({
+      providers: [],
+      active_provider_index: 0,
+      ffmpeg_path: "",
+      ffprobe_path: "",
+      default_output_folder: "",
+      naming_template: "{name}.mkv",
+      max_parallel: 1,
+      check_updates_on_startup: true,
+      flatten_output_folders: false,
+    });
+  });
+
+  it("places File Handling between FFmpeg Paths and Execution", () => {
+    render(() => <SettingsPage />);
+    const tabLabels = ["AI Providers", "FFmpeg Paths", "File Handling", "Execution"];
+    const labels = screen
+      .getAllByRole("button")
+      .map((el) => el.textContent)
+      .filter((t) => tabLabels.includes(t ?? ""));
+    const paths = labels.indexOf("FFmpeg Paths");
+    const files = labels.indexOf("File Handling");
+    const execution = labels.indexOf("Execution");
+    expect(screen.getByText("File Handling")).toBeTruthy();
+    expect(files).toBe(paths + 1);
+    expect(execution).toBe(files + 1);
+  });
+
+  it("does not show Naming Template on FFmpeg Paths", () => {
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("FFmpeg Paths"));
+    expect(screen.queryByText("Naming Template")).toBeNull();
+  });
+
+  it("shows Naming Template and unchecked flatten checkbox on File Handling", () => {
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("File Handling"));
+    expect(screen.getByText("Naming Template")).toBeTruthy();
+    const checkbox = screen.getByRole("checkbox", {
+      name: /flatten output folders/i,
+    }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it("toggles flatten_output_folders", () => {
+    render(() => <SettingsPage />);
+    fireEvent.click(screen.getByText("File Handling"));
+    const checkbox = screen.getByRole("checkbox", {
+      name: /flatten output folders/i,
+    });
+    fireEvent.click(checkbox);
+    expect(settings().flatten_output_folders).toBe(true);
+    fireEvent.click(checkbox);
+    expect(settings().flatten_output_folders).toBe(false);
   });
 });

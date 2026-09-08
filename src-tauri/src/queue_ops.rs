@@ -10,6 +10,7 @@ fn apply_ai_response(
     response: AiResponse,
     output_folder: &str,
     naming_template: &str,
+    flatten_output_folders: bool,
 ) {
     if response.command.is_empty() {
         file.error_message = "AI returned an empty command".to_string();
@@ -22,6 +23,7 @@ fn apply_ai_response(
         &file.input_path,
         output_folder,
         naming_template,
+        flatten_output_folders,
     );
     file.generated_command = assemble_command(
         &response.command,
@@ -95,6 +97,7 @@ pub fn apply_command_template(
     queue: &mut WorkQueue,
     output_folder: &str,
     naming_template: &str,
+    flatten_output_folders: bool,
     source_id: &str,
     target_ids: &[String],
 ) -> Result<Vec<VideoFile>, String> {
@@ -128,6 +131,7 @@ pub fn apply_command_template(
                 &target.input_path,
                 output_folder,
                 naming_template,
+                flatten_output_folders,
             );
 
             target.generated_command = assemble_command(
@@ -158,6 +162,7 @@ pub async fn generate_commands_snapshots(
     provider: &AiProviderConfig,
     output_folder: &str,
     naming_template: &str,
+    flatten_output_folders: bool,
     guidelines: &str,
 ) -> Result<Vec<VideoFile>, String> {
     let guidelines = match feedback {
@@ -179,7 +184,7 @@ pub async fn generate_commands_snapshots(
         if let Some(ref metadata) = file.metadata {
             match ai::generate_command(provider, &guidelines, metadata).await {
                 Ok(response) => {
-                    apply_ai_response(file, response, output_folder, naming_template);
+                    apply_ai_response(file, response, output_folder, naming_template, flatten_output_folders);
                 }
                 Err(e) => {
                     file.error_message = e.to_string();
@@ -201,6 +206,7 @@ pub async fn generate_commands(
     provider: &AiProviderConfig,
     output_folder: &str,
     naming_template: &str,
+    flatten_output_folders: bool,
 ) -> Result<Vec<VideoFile>, String> {
     let snapshots: Vec<VideoFile> = queue
         .files
@@ -215,6 +221,7 @@ pub async fn generate_commands(
         provider,
         output_folder,
         naming_template,
+        flatten_output_folders,
         &guidelines,
     )
     .await?;
@@ -253,6 +260,7 @@ pub fn approve_file(
     command_args: &str,
     output_folder: &str,
     naming_template: &str,
+    flatten_output_folders: bool,
 ) -> Result<(), String> {
     let command_args = command_args.trim();
     if command_args.is_empty() {
@@ -272,6 +280,7 @@ pub fn approve_file(
         &file.input_path,
         output_folder,
         naming_template,
+        flatten_output_folders,
     );
     file.generated_command = assemble_command(command_args, &file.input_path, &file.output_path);
     file.command_args = command_args.to_string();
@@ -595,6 +604,7 @@ mod tests {
             &mut queue,
             "/transcoded",
             "{name}.mkv",
+            false,
             "source",
             &["target".to_string()],
         );
@@ -632,6 +642,7 @@ mod tests {
             &mut queue,
             "/transcoded",
             "{name}.mkv",
+            false,
             "source",
             &["target".to_string()],
         );
@@ -661,6 +672,7 @@ mod tests {
             &mut queue,
             "/transcoded",
             "{name}.mkv",
+            false,
             "source",
             &["target".to_string()],
         );
@@ -684,6 +696,7 @@ mod tests {
             &mut queue,
             "/transcoded",
             "{name}.mkv",
+            false,
             "missing",
             &["target".to_string()],
         );
@@ -708,6 +721,7 @@ mod tests {
             &mut queue,
             "/transcoded",
             "{name}.mkv",
+            false,
             "source",
             &["target".to_string()],
         );
@@ -736,6 +750,7 @@ mod tests {
             &mut queue,
             "/transcoded",
             "{name}.mkv",
+            false,
             "source",
             &["target".to_string()],
         );
@@ -769,6 +784,7 @@ mod tests {
             &mut queue,
             "/transcoded",
             "{name}.mkv",
+            false,
             "source",
             &["target".to_string()],
         );
@@ -805,6 +821,7 @@ mod tests {
             &mut queue,
             "/transcoded",
             "{name}.mkv",
+            false,
             "source",
             &["target".to_string()],
         );
@@ -832,7 +849,7 @@ mod tests {
             reasoning: "none".to_string(),
         };
 
-        apply_ai_response(&mut file, response, "/transcoded", "{name}.mkv");
+        apply_ai_response(&mut file, response, "/transcoded", "{name}.mkv", false);
 
         assert_eq!(file.status, FileStatus::Error);
         assert_eq!(file.error_message, "AI returned an empty command");
@@ -861,6 +878,7 @@ mod tests {
             "-c:v copy -c:a copy",
             "/transcoded",
             "{name}.mkv",
+            false,
         )
         .unwrap();
 
@@ -869,6 +887,35 @@ mod tests {
         assert_eq!(f.command_args, "-c:v copy -c:a copy");
         assert!(f.generated_command.contains("-i"));
         assert!(!f.output_path.is_empty());
+    }
+
+    #[test]
+    fn approve_file_flatten_output_folders_writes_flat_output_path() {
+        let file = create_test_video_file("ep", Some(|f| {
+            f.scan_root = "/media".to_string();
+            f.input_path = "/media/TV/Show/ep.mkv".to_string();
+        }));
+        let mut queue = test_queue(vec![file]);
+
+        approve_file(
+            &mut queue,
+            "ep",
+            "-c:v copy",
+            "/transcoded",
+            "{name}.mkv",
+            true,
+        )
+        .unwrap();
+
+        let output_path = &queue.files[0].output_path;
+        assert!(
+            output_path.ends_with("/ep.mkv"),
+            "expected flat filename, got {output_path}"
+        );
+        assert!(
+            !output_path.contains("/TV/"),
+            "flattened path must not contain /TV/, got {output_path}"
+        );
     }
 
     #[test]
@@ -883,6 +930,7 @@ mod tests {
             "-c:v copy",
             "/transcoded",
             "{name}.mkv",
+            false,
         )
         .is_err());
     }
@@ -892,8 +940,8 @@ mod tests {
         let file = create_test_video_file("file1", None);
         let mut queue = test_queue(vec![file]);
 
-        assert!(approve_file(&mut queue, "file1", "", "/transcoded", "{name}.mkv").is_err());
-        assert!(approve_file(&mut queue, "file1", "   ", "/transcoded", "{name}.mkv").is_err());
+        assert!(approve_file(&mut queue, "file1", "", "/transcoded", "{name}.mkv", false).is_err());
+        assert!(approve_file(&mut queue, "file1", "   ", "/transcoded", "{name}.mkv", false).is_err());
     }
 
     #[test]
@@ -906,6 +954,7 @@ mod tests {
             "-c:v copy",
             "/transcoded",
             "{name}.mkv",
+            false,
         )
         .is_err());
     }
@@ -927,7 +976,7 @@ mod tests {
             }));
             file.status = status.clone();
             let mut queue = test_queue(vec![file]);
-            assert!(approve_file(&mut queue, "file1", "-c:v copy", "/transcoded", "{name}.mkv").is_err());
+            assert!(approve_file(&mut queue, "file1", "-c:v copy", "/transcoded", "{name}.mkv", false).is_err());
             assert_eq!(queue.files[0].status, status);
         }
     }
@@ -960,6 +1009,7 @@ mod tests {
             "-c:v copy -c:a copy",
             "/transcoded",
             "{name}.mkv",
+            false,
         )
         .unwrap();
         unapprove_file(&mut queue, "file1").unwrap();
@@ -1083,6 +1133,7 @@ mod tests {
             &provider,
             "/transcoded",
             "{name}.mkv",
+            false,
         )
         .await
         .unwrap();
@@ -1186,6 +1237,28 @@ mod tests {
         let first = add_folder(&mut queue, dir.to_str().unwrap());
         assert_eq!(first, 2);
         assert_eq!(queue.files.len(), 2);
+
+        let expected_root = dir
+            .parent()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string();
+        let added_dir = dir
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string();
+        for file in &queue.files {
+            let root = file
+                .scan_root
+                .replace('\\', "/")
+                .trim_end_matches('/')
+                .to_string();
+            assert_eq!(root, expected_root);
+            assert_ne!(root, added_dir);
+        }
 
         let second = add_folder(&mut queue, dir.to_str().unwrap());
         assert_eq!(second, 0);

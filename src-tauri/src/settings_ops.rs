@@ -44,6 +44,7 @@ mod tests {
             naming_template: String::new(),
             max_parallel: 1,
             check_updates_on_startup: true,
+            flatten_output_folders: false,
         };
 
         let (ffmpeg_found, ffprobe_found) = verify_ffmpeg_paths(&mut settings);
@@ -65,6 +66,7 @@ mod tests {
             naming_template: String::new(),
             max_parallel: 1,
             check_updates_on_startup: true,
+            flatten_output_folders: false,
         };
 
         let (ffmpeg_found, ffprobe_found) = verify_ffmpeg_paths(&mut settings);
@@ -101,6 +103,7 @@ mod tests {
             naming_template: String::new(),
             max_parallel: 8,
             check_updates_on_startup: true,
+            flatten_output_folders: false,
         };
         clamp_settings_max_parallel(&mut settings);
         assert_eq!(settings.max_parallel, 4);

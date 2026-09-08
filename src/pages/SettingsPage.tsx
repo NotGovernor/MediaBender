@@ -27,7 +27,7 @@ function getProviderTitle(provider: AIProviderConfig): string {
 }
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = createSignal<"providers" | "paths" | "execution">("providers");
+  const [activeTab, setActiveTab] = createSignal<"providers" | "paths" | "file-handling" | "execution">("providers");
   const [availableModels, setAvailableModels] = createSignal<Record<number, string[]>>({});
   const [fetchingIndex, setFetchingIndex] = createSignal<number | null>(null);
   const [fetchError, setFetchError] = createSignal<Record<number, string>>({});
@@ -147,6 +147,7 @@ export default function SettingsPage() {
         {[
           { key: "providers" as const, label: "AI Providers" },
           { key: "paths" as const, label: "FFmpeg Paths" },
+          { key: "file-handling" as const, label: "File Handling" },
           { key: "execution" as const, label: "Execution" },
         ].map((tab) => (
           <button
@@ -348,7 +349,12 @@ export default function SettingsPage() {
                 Verify FFmpeg
               </button>
             </div>
+          </div>
+        )}
 
+        {/* File Handling */}
+        {activeTab() === "file-handling" && (
+          <div class="space-y-5 max-w-2xl">
             <div>
               <label class="block text-xs font-medium text-text-muted mb-1">Naming Template</label>
               <input
@@ -359,6 +365,27 @@ export default function SettingsPage() {
                 class="w-full bg-bg-tertiary border border-border rounded px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-gold/50"
               />
               <p class="text-xs text-text-muted mt-1">Use {'{name}'} for original filename without extension</p>
+            </div>
+
+            <div>
+              <label for="flatten-output-folders" class="flex items-center gap-2">
+                <input
+                  id="flatten-output-folders"
+                  type="checkbox"
+                  checked={settings().flatten_output_folders}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      flatten_output_folders: e.currentTarget.checked,
+                    }))
+                  }
+                  class="accent-gold"
+                />
+                <span class="text-sm text-text-primary">Flatten output folders</span>
+              </label>
+              <p class="text-xs text-text-muted mt-1">
+                Place every transcoded file directly in the output folder. Off (default): recreate the dropped folder and its subfolders.
+              </p>
             </div>
           </div>
         )}

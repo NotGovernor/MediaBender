@@ -24,6 +24,7 @@ pub fn default_settings() -> AppSettings {
         naming_template: "{name}.mkv".to_string(),
         max_parallel: 1,
         check_updates_on_startup: true,
+        flatten_output_folders: false,
     }
 }
 

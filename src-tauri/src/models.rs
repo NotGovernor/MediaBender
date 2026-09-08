@@ -165,6 +165,21 @@ mod tests {
     }
 
     #[test]
+    fn missing_flatten_output_folders_defaults_false() {
+        let json = r#"{
+            "providers": [],
+            "active_provider_index": 0,
+            "ffmpeg_path": "",
+            "ffprobe_path": "",
+            "default_output_folder": "",
+            "naming_template": "{name}.mkv",
+            "max_parallel": 1
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).expect("old settings must deserialize");
+        assert!(!s.flatten_output_folders);
+    }
+
+    #[test]
     fn check_updates_on_startup_false_roundtrips() {
         let json = r#"{
             "providers": [],
@@ -263,6 +278,8 @@ pub struct AppSettings {
     pub max_parallel: i32,
     #[serde(default = "default_check_updates_on_startup")]
     pub check_updates_on_startup: bool,
+    #[serde(default)]
+    pub flatten_output_folders: bool,
 }
 
 impl AppSettings {

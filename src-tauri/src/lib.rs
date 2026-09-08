@@ -120,13 +120,13 @@ async fn approve_file(
     command_args: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkQueue, String> {
-    let (output_folder, naming_template) = {
+    let (output_folder, naming_template, flatten_output_folders) = {
         let settings = state.settings.lock().await;
-        (settings.default_output_folder.clone(), settings.naming_template.clone())
+        (settings.default_output_folder.clone(), settings.naming_template.clone(), settings.flatten_output_folders.clone())
     };
     ensure_id_not_frozen(&state, &file_id).await?;
     let mut queue = state.queue.lock().await;
-    approve_file_impl(&mut queue, &file_id, &command_args, &output_folder, &naming_template)?;
+    approve_file_impl(&mut queue, &file_id, &command_args, &output_folder, &naming_template, flatten_output_folders)?;
     persist_queue(&state.store, &mut queue)
 }
 
@@ -188,7 +188,7 @@ async fn generate_commands(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkQueue, String> {
-    let (provider, output_folder, naming_template, guidelines, snapshots) = {
+    let (provider, output_folder, naming_template, flatten_output_folders, guidelines, snapshots) = {
         let settings = state.settings.lock().await;
         let provider = settings
             .providers
@@ -197,6 +197,7 @@ async fn generate_commands(
             .ok_or("No active provider configured")?;
         let output_folder = settings.default_output_folder.clone();
         let naming_template = settings.naming_template.clone();
+        let flatten_output_folders = settings.flatten_output_folders.clone();
         drop(settings);
         let queue = state.queue.lock().await;
         let guidelines = queue.guidelines.clone();
@@ -206,7 +207,7 @@ async fn generate_commands(
             .filter(|f| file_ids.iter().any(|id| id == &f.id))
             .cloned()
             .collect();
-        (provider, output_folder, naming_template, guidelines, snapshots)
+        (provider, output_folder, naming_template, flatten_output_folders, guidelines, snapshots)
     }; // mutexes released before HTTP
 
     let mut allowed = Vec::new();
@@ -231,6 +232,7 @@ async fn generate_commands(
             &provider,
             &output_folder,
             &naming_template,
+            flatten_output_folders,
             &guidelines,
         )
         .await?;
@@ -274,12 +276,12 @@ async fn apply_command_template(
             allowed_targets.push(id);
         }
     }
-    let (output_folder, naming_template) = {
+    let (output_folder, naming_template, flatten_output_folders) = {
         let settings = state.settings.lock().await;
-        (settings.default_output_folder.clone(), settings.naming_template.clone())
+        (settings.default_output_folder.clone(), settings.naming_template.clone(), settings.flatten_output_folders.clone())
     };
     let mut queue = state.queue.lock().await;
-    apply_command_template_impl(&mut queue, &output_folder, &naming_template, &source_id, &allowed_targets)?;
+    apply_command_template_impl(&mut queue, &output_folder, &naming_template, flatten_output_folders, &source_id, &allowed_targets)?;
     persist_queue(&state.store, &mut queue)
 }
 

@@ -30,6 +30,7 @@ describe("GuidelinesInterviewModal", () => {
       naming_template: "{name}.mkv",
       max_parallel: 1,
       check_updates_on_startup: true,
+      flatten_output_folders: false,
     });
   });
 

@@ -46,11 +46,11 @@ An AI backend configuration (base URL, API key, model). The app supports multipl
 _Avoid_: backend, endpoint, API
 
 **Scan Root**:
-The directory path explicitly selected by the user during Add Folder. Used to compute the relative directory structure preserved under the output folder. Each Queue Item remembers its Scan Root so output paths can be reconstructed at execution time.
+The directory used to compute the relative output tree. For Add Folder / dropped directories, this is the **parent** of the folder the user selected, so the selected folder name is preserved under the output folder. For individually added files, this is the file's parent directory (relative dir is empty → file lands flat in the output folder). Each Queue Item remembers its Scan Root. Existing items keep whatever Scan Root they were stored with (no migration).
 _Avoid_: source folder, input root, base path
 
 **Output Path**:
-The destination file path for a transcoded Queue Item. When a folder tree is scanned, the output path preserves the directory structure relative to the Scan Root, anchored under the default output folder. For individually added files, the output path is simply the default output folder + naming template.
+The destination file path for a transcoded Queue Item. When folder structure is preserved (default), the output path is the default output folder + path relative to Scan Root + naming template. When Settings `flatten_output_folders` is on, the output path is the default output folder + naming template only (no extra directories). Flatten is applied when the command is generated, regenerated, approved, or copied via Apply Template — not at encode. For individually added files, the output path is the default output folder + naming template.
 _Avoid_: output file, destination
 
 **Approved**:
