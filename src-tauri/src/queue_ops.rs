@@ -36,6 +36,23 @@ fn apply_ai_response(
     file.status = FileStatus::Pending;
 }
 
+pub async fn probe_one_snapshot(file: &mut VideoFile, ffprobe_path: &str) {
+    match analyze_file(&file.input_path, ffprobe_path).await {
+        Ok((metadata, raw_json)) => {
+            file.metadata = Some(metadata);
+            file.ffprobe_raw = raw_json;
+            if let Ok(fs_meta) = std::fs::metadata(&file.input_path) {
+                file.input_size = fs_meta.len() as i64;
+            }
+        }
+        Err(e) => {
+            file.error_message = e.to_string();
+            file.status = FileStatus::Error;
+        }
+    }
+    file.updated_at = chrono::Utc::now().to_rfc3339();
+}
+
 /// Analyze snapshots without a `WorkQueue`. Callers must copy files out of the
 /// queue, drop the mutex, then copy results back (`lib.rs` does this).
 pub async fn scan_and_analyze_snapshots(
@@ -53,20 +70,7 @@ pub async fn scan_and_analyze_snapshots(
             continue;
         }
 
-        match analyze_file(&file.input_path, ffprobe_path).await {
-            Ok((metadata, raw_json)) => {
-                file.metadata = Some(metadata);
-                file.ffprobe_raw = raw_json;
-                if let Ok(fs_meta) = std::fs::metadata(&file.input_path) {
-                    file.input_size = fs_meta.len() as i64;
-                }
-            }
-            Err(e) => {
-                file.error_message = e.to_string();
-                file.status = FileStatus::Error;
-            }
-        }
-        file.updated_at = chrono::Utc::now().to_rfc3339();
+        probe_one_snapshot(file, ffprobe_path).await;
         updated_files.push(file.clone());
     }
 
@@ -255,6 +259,25 @@ pub fn try_merge_generated(queue: &mut WorkQueue, updated: &VideoFile) -> MergeG
             MergeGenerated::Applied
         }
         None => MergeGenerated::Refused,
+    }
+}
+
+pub fn merge_probed_file(queue: &mut WorkQueue, updated: &VideoFile) -> bool {
+    let Some(slot) = queue.files.iter_mut().find(|f| f.id == updated.id) else {
+        return false;
+    };
+    if !probe_gate(Some(&slot.status)) {
+        return false;
+    }
+    *slot = updated.clone();
+    true
+}
+
+pub fn probe_gate(live_status: Option<&FileStatus>) -> bool {
+    match live_status {
+        None => false,
+        Some(FileStatus::Skipped | FileStatus::Completed | FileStatus::Processing) => false,
+        Some(_) => true,
     }
 }
 
@@ -1028,6 +1051,20 @@ mod tests {
     }
 
     #[test]
+    fn probe_gate_allows_pending_and_error() {
+        assert!(probe_gate(Some(&FileStatus::Pending)));
+        assert!(probe_gate(Some(&FileStatus::Error)));
+    }
+
+    #[test]
+    fn probe_gate_refuses_missing_skipped_completed_processing() {
+        assert!(!probe_gate(None));
+        assert!(!probe_gate(Some(&FileStatus::Skipped)));
+        assert!(!probe_gate(Some(&FileStatus::Completed)));
+        assert!(!probe_gate(Some(&FileStatus::Processing)));
+    }
+
+    #[test]
     fn approve_file_rejects_processing_completed_skipped() {
         for status in [FileStatus::Processing, FileStatus::Completed, FileStatus::Skipped] {
             let mut file = create_test_video_file("file1", Some(|f| {
@@ -1520,5 +1557,48 @@ mod tests {
         assert_eq!(try_merge_generated(&mut queue, &other), MergeGenerated::Refused);
         assert_eq!(queue.files.len(), 1);
         assert!(queue.files[0].command_args.is_empty());
+    }
+
+    #[test]
+    fn merge_probed_file_replaces_pending_slot() {
+        let pending = create_test_video_file("a", Some(|f| {
+            f.metadata = None;
+        }));
+        let mut queue = test_queue(vec![pending]);
+        let mut updated = queue.files[0].clone();
+        updated.metadata = create_test_video_file("a", None).metadata;
+        updated.ffprobe_raw = "{\"ok\":true}".to_string();
+
+        assert!(merge_probed_file(&mut queue, &updated));
+        assert!(queue.files[0].metadata.is_some());
+        assert_eq!(queue.files[0].ffprobe_raw, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn merge_probed_file_ignores_unknown_id() {
+        let mut queue = test_queue(vec![create_test_video_file("a", None)]);
+        let other = create_test_video_file("nope", None);
+        assert!(!merge_probed_file(&mut queue, &other));
+        assert_eq!(queue.files.len(), 1);
+        assert_eq!(queue.files[0].id, "a");
+    }
+
+    #[test]
+    fn merge_probed_file_refuses_skipped_completed_processing() {
+        for status in [FileStatus::Skipped, FileStatus::Completed, FileStatus::Processing] {
+            let mut live = create_test_video_file("a", None);
+            live.status = status.clone();
+            let mut queue = test_queue(vec![live]);
+            let pre_raw = queue.files[0].ffprobe_raw.clone();
+            let mut updated = create_test_video_file("a", None);
+            updated.ffprobe_raw = "raw".to_string();
+            assert_eq!(updated.status, FileStatus::Pending);
+            assert!(updated.metadata.is_some());
+
+            assert!(!merge_probed_file(&mut queue, &updated));
+            assert_eq!(queue.files[0].status, status);
+            assert_ne!(queue.files[0].ffprobe_raw, "raw");
+            assert_eq!(queue.files[0].ffprobe_raw, pre_raw);
+        }
     }
 }

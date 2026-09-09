@@ -12,9 +12,10 @@ import {
   isFileDropHovering,
   generatingIds,
   scheduledIds,
+  isScanning,
 } from "../stores/appStore";
 import type { VideoFile, FileStatus, WorkQueue } from "../types";
-import { isStartEligible, isFrozen } from "../lib/queueReadiness";
+import { isStartEligible, isFrozen, rowOverlayStatus } from "../lib/queueReadiness";
 
 function formatDuration(seconds: number): string {
   if (!seconds) return "--";
@@ -141,7 +142,7 @@ export default function FileTable() {
                   </td>
                   <td class="px-3 py-2">
                     <StatusBadge
-                      status={generatingIds().includes(file.id) ? "Generating" : file.status}
+                      status={rowOverlayStatus(file, generatingIds(), isScanning())}
                       isApproved={file.is_approved}
                     />
                   </td>

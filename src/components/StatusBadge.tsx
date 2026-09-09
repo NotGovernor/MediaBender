@@ -11,6 +11,7 @@ const statusConfig: Record<
   Pending: { label: "Pending", bg: "bg-status-pending/20", text: "text-status-pending" },
   Approved: { label: "Approved", bg: "bg-gold/20", text: "text-gold" },
   Generating: { label: "Generating", bg: "bg-status-generating/20", text: "text-status-generating" },
+  Scanning: { label: "Scanning", bg: "bg-status-generating/20", text: "text-status-generating" },
   Processing: { label: "Processing", bg: "bg-status-processing/20", text: "text-status-processing" },
   Completed: { label: "Completed", bg: "bg-status-completed/20", text: "text-status-completed" },
   Error: { label: "Error", bg: "bg-status-error/20", text: "text-status-error" },
@@ -18,7 +19,7 @@ const statusConfig: Record<
 };
 
 export default function StatusBadge(props: {
-  status: FileStatus;
+  status: FileStatus | "Scanning";
   isApproved?: boolean;
 }) {
   const display = () => displayFileStatus(props.status, props.isApproved === true);
@@ -27,7 +28,7 @@ export default function StatusBadge(props: {
     <span
       class={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${config().bg} ${config().text}`}
     >
-      {display() === "Processing" || display() === "Generating" ? (
+      {display() === "Processing" || display() === "Generating" || display() === "Scanning" ? (
         <svg
           class="w-3 h-3 mr-1 animate-spin"
           fill="none"

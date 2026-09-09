@@ -27,8 +27,9 @@ use queue_ops::{
     add_files as add_files_impl, add_folder as add_folder_impl, add_paths as add_paths_impl,
     apply_command_template as apply_command_template_impl, approve_file as approve_file_impl,
     clear_files as clear_files_impl, generate_commands_snapshots, try_merge_generated, MergeGenerated,
-    prepare_reprocess, remove_file as remove_file_impl, reset_file as reset_file_impl,
-    scan_and_analyze_snapshots, skip_file as skip_file_impl, unapprove_file as unapprove_file_impl,
+    merge_probed_file, prepare_reprocess, probe_gate, probe_one_snapshot,
+    remove_file as remove_file_impl, reset_file as reset_file_impl, skip_file as skip_file_impl,
+    unapprove_file as unapprove_file_impl,
 };
 use tauri::Emitter;
 
@@ -158,9 +159,14 @@ async fn reset_file(file_id: String, state: tauri::State<'_, AppState>) -> Resul
 async fn scan_and_analyze(
     file_ids: Vec<String>,
     ffprobe_path: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkQueue, String> {
-    let mut snapshots = {
+    if ffprobe_path.is_empty() {
+        return Err("FFprobe path is not configured".to_string());
+    }
+
+    let snapshots = {
         let queue = state.queue.lock().await;
         queue
             .files
@@ -168,16 +174,37 @@ async fn scan_and_analyze(
             .filter(|f| file_ids.iter().any(|id| id == &f.id))
             .cloned()
             .collect::<Vec<VideoFile>>()
-    }; // mutex released before ffprobe
+    };
 
-    let results = scan_and_analyze_snapshots(&mut snapshots, &ffprobe_path).await?;
+    for snap in snapshots {
+        if snap.metadata.is_some() {
+            continue;
+        }
+        {
+            let queue = state.queue.lock().await;
+            let live = queue.files.iter().find(|f| f.id == snap.id);
+            if !probe_gate(live.map(|f| &f.status)) {
+                continue;
+            }
+        }
 
-    let mut queue = state.queue.lock().await;
-    for updated in results {
-        if let Some(slot) = queue.files.iter_mut().find(|f| f.id == updated.id) {
-            *slot = updated;
+        let mut file = snap;
+        probe_one_snapshot(&mut file, &ffprobe_path).await;
+
+        let emit_file = {
+            let mut queue = state.queue.lock().await;
+            if merge_probed_file(&mut queue, &file) {
+                Some(file)
+            } else {
+                None
+            }
+        };
+        if let Some(updated) = emit_file {
+            let _ = app.emit("probe-event", updated);
         }
     }
+
+    let mut queue = state.queue.lock().await;
     persist_queue(&state.store, &mut queue)
 }
 

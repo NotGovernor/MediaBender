@@ -6,6 +6,7 @@ import {
   isFrozen,
   isApprovable,
   isGenerateTarget,
+  rowOverlayStatus,
 } from "./queueReadiness";
 import { createMockFile } from "../test-helpers";
 import type { FileStatus } from "../types";
@@ -31,6 +32,10 @@ describe("displayFileStatus", () => {
       expect(displayFileStatus(status, true)).toBe(status);
       expect(displayFileStatus(status, false)).toBe(status);
     }
+  });
+
+  it("displayFileStatus_Scanning_is_not_Approved", () => {
+    expect(displayFileStatus("Scanning", true)).toBe("Scanning");
   });
 });
 
@@ -190,5 +195,46 @@ describe("isGenerateTarget", () => {
         [],
       ),
     ).toBe(false);
+  });
+});
+
+describe("rowOverlayStatus", () => {
+  it("rowOverlayStatus_Generating_wins_over_scanning", () => {
+    expect(
+      rowOverlayStatus(
+        { id: "a", status: "Pending", metadata: null },
+        ["a"],
+        true,
+      ),
+    ).toBe("Generating");
+  });
+
+  it("rowOverlayStatus_Scanning_when_pending_unprobed_and_scan_live", () => {
+    expect(
+      rowOverlayStatus(
+        { id: "a", status: "Pending", metadata: null, is_approved: true },
+        [],
+        true,
+      ),
+    ).toBe("Scanning");
+  });
+
+  it("rowOverlayStatus_Pending_when_scan_live_but_metadata_present", () => {
+    expect(
+      rowOverlayStatus(
+        { id: "a", status: "Pending", metadata: { container: "mkv" } },
+        [],
+        true,
+      ),
+    ).toBe("Pending");
+  });
+
+  it("rowOverlayStatus_not_Scanning_when_Error_or_not_scanning", () => {
+    expect(
+      rowOverlayStatus({ id: "a", status: "Error", metadata: null }, [], true),
+    ).toBe("Error");
+    expect(
+      rowOverlayStatus({ id: "a", status: "Pending", metadata: null }, [], false),
+    ).toBe("Pending");
   });
 });

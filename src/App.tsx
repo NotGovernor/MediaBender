@@ -51,6 +51,7 @@ import {
 import { scanPendingAfterAdd } from "./lib/scanPendingAfterAdd";
 import { clampMaxParallel } from "./lib/clampMaxParallel";
 import { applyGenerateEvent, applyExecutorEvent } from "./lib/applyGenerateEvent";
+import { applyProbeEvent } from "./lib/applyProbeEvent";
 import type { AddPathsResult, AppSettings, VideoFile, WorkQueue } from "./types";
 
 // Debounce helpers for auto-save
@@ -154,6 +155,7 @@ export default function App() {
   let unlistenExecutor: (() => void) | null = null;
   let unlistenPipeline: (() => void) | null = null;
   let unlistenGenerate: (() => void) | null = null;
+  let unlistenProbe: (() => void) | null = null;
   let unlistenDrag: (() => void) | undefined;
   const preventNav = (e: DragEvent) => {
     e.preventDefault();
@@ -222,6 +224,10 @@ export default function App() {
 
     unlistenGenerate = await listen<VideoFile>("generate-event", (event) => {
       applyGenerateEvent(event.payload);
+    });
+
+    unlistenProbe = await listen<VideoFile>("probe-event", (event) => {
+      applyProbeEvent(event.payload);
     });
 
     try {
@@ -320,6 +326,7 @@ export default function App() {
     if (unlistenExecutor) unlistenExecutor();
     if (unlistenPipeline) unlistenPipeline();
     unlistenGenerate?.();
+    unlistenProbe?.();
   });
 
   // Keep FFmpeg missing signals in sync with settings

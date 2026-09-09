@@ -1,11 +1,23 @@
 import type { FileStatus } from "../types";
 
-export type DisplayFileStatus = FileStatus | "Approved";
+export type DisplayFileStatus = FileStatus | "Approved" | "Scanning";
+export type OverlayStatus = FileStatus | "Scanning";
+
+export function rowOverlayStatus(
+  file: { id: string; status: FileStatus; metadata: unknown; is_approved?: boolean },
+  generatingIds: readonly string[],
+  scanning: boolean,
+): OverlayStatus {
+  if (generatingIds.includes(file.id)) return "Generating";
+  if (scanning && file.status === "Pending" && !file.metadata) return "Scanning";
+  return file.status;
+}
 
 export function displayFileStatus(
-  status: FileStatus,
+  status: FileStatus | "Scanning",
   isApproved: boolean,
 ): DisplayFileStatus {
+  if (status === "Scanning") return "Scanning";
   if (status === "Pending" && isApproved) return "Approved";
   return status;
 }

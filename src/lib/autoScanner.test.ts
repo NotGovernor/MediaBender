@@ -2,11 +2,11 @@ import { describe, it, expect, vi, type Mock } from "vitest";
 import { scanPendingFiles } from "./autoScanner";
 import type { LogEntry, WorkQueue } from "../types";
 import { createMockFile, createMockQueue } from "../test-helpers";
+import * as appStore from "../stores/appStore";
 
 describe("scanPendingFiles", () => {
   interface Deps {
     scanAndAnalyze: Mock<(fileIds: string[], ffprobePath: string) => Promise<WorkQueue>>;
-    setWorkQueue: Mock<(queue: WorkQueue) => void>;
     addLog: Mock<(entry: LogEntry) => void>;
     setIsScanning: Mock<(value: boolean) => void>;
   }
@@ -14,7 +14,6 @@ describe("scanPendingFiles", () => {
   function makeDeps(overrides: Partial<Deps> = {}): Deps {
     return {
       scanAndAnalyze: vi.fn().mockResolvedValue(createMockQueue()),
-      setWorkQueue: vi.fn(),
       addLog: vi.fn(),
       setIsScanning: vi.fn(),
       ...overrides,
@@ -32,7 +31,7 @@ describe("scanPendingFiles", () => {
     );
   });
 
-  it("replaces the work queue with the returned WorkQueue", async () => {
+  it("scanPendingFiles_does_not_setWorkQueue", async () => {
     const returned = createMockQueue([
       createMockFile({
         id: "file-1",
@@ -48,10 +47,12 @@ describe("scanPendingFiles", () => {
     const deps = makeDeps({
       scanAndAnalyze: vi.fn().mockResolvedValue(returned),
     });
+    const setWorkQueue = vi.spyOn(appStore, "setWorkQueue");
 
     await scanPendingFiles(["file-1"], "/path/to/ffprobe", deps);
 
-    expect(deps.setWorkQueue).toHaveBeenCalledWith(returned);
+    expect(setWorkQueue).not.toHaveBeenCalled();
+    setWorkQueue.mockRestore();
   });
 
   it("sets isScanning true before work and false after", async () => {

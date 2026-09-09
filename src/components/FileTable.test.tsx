@@ -13,6 +13,7 @@ import {
   addGeneratingIds,
   clearGeneratingIds,
   setScheduledIds,
+  setIsScanning,
 } from "../stores/appStore";
 import type { VideoFile } from "../types";
 
@@ -78,6 +79,7 @@ describe("FileTable", () => {
     setFileDropHovering(false);
     clearGeneratingIds();
     setScheduledIds([]);
+    setIsScanning(false);
   });
 
   it("empty_state_mentions_drop_files_or_folders", () => {
@@ -243,6 +245,42 @@ describe("FileTable", () => {
 
     expect(screen.getByText("Generating")).toBeTruthy();
     expect(screen.queryByText("Pending")).toBeFalsy();
+    expect(workQueue().files[0].status).toBe("Pending");
+  });
+
+  it("shows_Scanning_badge_from_isScanning_while_file_status_stays_Pending", () => {
+    const pending = createMockFile({
+      id: "a",
+      input_path: "/media/movies/PendingMovie.mkv",
+      status: "Pending",
+      is_approved: false,
+      metadata: null,
+    });
+    setWorkQueue((q) => ({ ...q, files: [pending] }));
+    setIsScanning(true);
+
+    render(() => <FileTable />);
+
+    expect(screen.getByText("Scanning")).toBeTruthy();
+    expect(screen.queryByText("Pending")).toBeFalsy();
+    expect(workQueue().files[0].status).toBe("Pending");
+  });
+
+  it("does_not_show_Scanning_on_unprobed_Pending_when_not_scanning", () => {
+    const pending = createMockFile({
+      id: "a",
+      input_path: "/media/movies/PendingMovie.mkv",
+      status: "Pending",
+      is_approved: false,
+      metadata: null,
+    });
+    setWorkQueue((q) => ({ ...q, files: [pending] }));
+    setIsScanning(false);
+
+    render(() => <FileTable />);
+
+    expect(screen.getByText("Pending")).toBeTruthy();
+    expect(screen.queryByText("Scanning")).toBeFalsy();
     expect(workQueue().files[0].status).toBe("Pending");
   });
 
