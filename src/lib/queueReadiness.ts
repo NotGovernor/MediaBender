@@ -13,12 +13,13 @@ export function displayFileStatus(
 export function isStartEligible(file: {
   is_approved: boolean;
   status: FileStatus;
+  command_args: string;
 }): boolean {
-  return file.is_approved && file.status === "Pending";
+  return file.is_approved && file.status === "Pending" && file.command_args.trim() !== "";
 }
 
 export function isAddable(
-  file: { id: string; is_approved: boolean; status: FileStatus },
+  file: { id: string; is_approved: boolean; status: FileStatus; command_args: string },
   scheduledIds: readonly string[],
 ): boolean {
   return isStartEligible(file) && !scheduledIds.includes(file.id);

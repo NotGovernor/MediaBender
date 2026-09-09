@@ -233,9 +233,28 @@ pub async fn generate_commands(
     Ok(results)
 }
 
-pub fn merge_generated_file(queue: &mut WorkQueue, updated: &VideoFile) {
-    if let Some(slot) = queue.files.iter_mut().find(|f| f.id == updated.id) {
-        *slot = updated.clone();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeGenerated {
+    Applied,
+    Refused,
+}
+
+/// Merge an HTTP generate result onto the live Work Queue row.
+/// Refuses Skipped / Completed / Processing and missing ids so a skip/reset
+/// that won during HTTP is not undone. Frozen (FIFO) is the caller's check.
+pub fn try_merge_generated(queue: &mut WorkQueue, updated: &VideoFile) -> MergeGenerated {
+    match queue.files.iter_mut().find(|f| f.id == updated.id) {
+        Some(slot) => {
+            if matches!(
+                slot.status,
+                FileStatus::Skipped | FileStatus::Completed | FileStatus::Processing
+            ) {
+                return MergeGenerated::Refused;
+            }
+            *slot = updated.clone();
+            MergeGenerated::Applied
+        }
+        None => MergeGenerated::Refused,
     }
 }
 
@@ -252,6 +271,12 @@ pub fn ensure_not_frozen(status: FileStatus, in_fifo: bool) -> Result<(), String
         return Err("File is in the encode queue".to_string());
     }
     Ok(())
+}
+
+pub fn is_pickup_eligible(file: &VideoFile) -> bool {
+    file.is_approved
+        && file.status == FileStatus::Pending
+        && !file.command_args.trim().is_empty()
 }
 
 pub fn approve_file(
@@ -968,6 +993,41 @@ mod tests {
     }
 
     #[test]
+    fn is_pickup_eligible_true_for_approved_pending_with_args() {
+        let file = create_test_video_file("a", Some(|f| {
+            f.is_approved = true;
+            f.status = FileStatus::Pending;
+            f.command_args = "-c:v copy".to_string();
+        }));
+        assert!(is_pickup_eligible(&file));
+    }
+
+    #[test]
+    fn is_pickup_eligible_false_when_command_args_blank() {
+        let file = create_test_video_file("a", Some(|f| {
+            f.is_approved = true;
+            f.status = FileStatus::Pending;
+            f.command_args = "  ".to_string();
+        }));
+        assert!(!is_pickup_eligible(&file));
+    }
+
+    #[test]
+    fn is_pickup_eligible_false_when_not_approved_or_not_pending() {
+        let not_approved = create_test_video_file("a", Some(|f| {
+            f.is_approved = false;
+            f.command_args = "-c:v copy".to_string();
+        }));
+        let processing = create_test_video_file("b", Some(|f| {
+            f.is_approved = true;
+            f.status = FileStatus::Processing;
+            f.command_args = "-c:v copy".to_string();
+        }));
+        assert!(!is_pickup_eligible(&not_approved));
+        assert!(!is_pickup_eligible(&processing));
+    }
+
+    #[test]
     fn approve_file_rejects_processing_completed_skipped() {
         for status in [FileStatus::Processing, FileStatus::Completed, FileStatus::Skipped] {
             let mut file = create_test_video_file("file1", Some(|f| {
@@ -1388,30 +1448,77 @@ mod tests {
     }
 
     #[test]
-    fn merge_generated_file_replaces_matching_id_only() {
-        let a = create_test_video_file("a", None);
-        let b = create_test_video_file("b", None);
-        let mut queue = test_queue(vec![a, b]);
-        let mut updated = create_test_video_file("a", Some(|f| {
+    fn try_merge_generated_applies_on_pending() {
+        let mut queue = test_queue(vec![create_test_video_file("a", None)]);
+        let updated = create_test_video_file("a", Some(|f| {
             f.command_args = "-c:v copy".to_string();
             f.description = "copy".to_string();
         }));
-        updated.command_args = "-c:v copy".to_string();
-        updated.description = "copy".to_string();
-
-        merge_generated_file(&mut queue, &updated);
-
+        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Applied);
         assert_eq!(queue.files[0].command_args, "-c:v copy");
         assert_eq!(queue.files[0].description, "copy");
-        assert!(queue.files[1].command_args.is_empty());
     }
 
     #[test]
-    fn merge_generated_file_ignores_unknown_id() {
+    fn try_merge_generated_applies_on_error() {
+        let live = create_test_video_file("a", Some(|f| {
+            f.status = FileStatus::Error;
+            f.error_message = "old".to_string();
+        }));
+        let mut queue = test_queue(vec![live]);
+        let updated = create_test_video_file("a", Some(|f| {
+            f.status = FileStatus::Pending;
+            f.command_args = "-c:v copy".to_string();
+            f.error_message.clear();
+        }));
+        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Applied);
+        assert_eq!(queue.files[0].status, FileStatus::Pending);
+        assert_eq!(queue.files[0].command_args, "-c:v copy");
+    }
+
+    #[test]
+    fn try_merge_generated_refuses_skipped() {
+        let live = create_test_video_file("a", Some(|f| f.status = FileStatus::Skipped));
+        let mut queue = test_queue(vec![live]);
+        let updated = create_test_video_file("a", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+        }));
+        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Refused);
+        assert!(queue.files[0].command_args.is_empty());
+        assert_eq!(queue.files[0].status, FileStatus::Skipped);
+    }
+
+    #[test]
+    fn try_merge_generated_refuses_completed() {
+        let live = create_test_video_file("a", Some(|f| f.status = FileStatus::Completed));
+        let mut queue = test_queue(vec![live]);
+        let updated = create_test_video_file("a", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+        }));
+        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Refused);
+        assert_eq!(queue.files[0].status, FileStatus::Completed);
+        assert!(queue.files[0].command_args.is_empty());
+    }
+
+    #[test]
+    fn try_merge_generated_refuses_processing() {
+        let live = create_test_video_file("a", Some(|f| f.status = FileStatus::Processing));
+        let mut queue = test_queue(vec![live]);
+        let updated = create_test_video_file("a", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+        }));
+        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Refused);
+        assert_eq!(queue.files[0].status, FileStatus::Processing);
+    }
+
+    #[test]
+    fn try_merge_generated_refuses_missing_id() {
         let mut queue = test_queue(vec![create_test_video_file("a", None)]);
-        let other = create_test_video_file("nope", None);
-        merge_generated_file(&mut queue, &other);
+        let other = create_test_video_file("nope", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+        }));
+        assert_eq!(try_merge_generated(&mut queue, &other), MergeGenerated::Refused);
         assert_eq!(queue.files.len(), 1);
-        assert_eq!(queue.files[0].id, "a");
+        assert!(queue.files[0].command_args.is_empty());
     }
 }

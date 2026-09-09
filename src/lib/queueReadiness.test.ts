@@ -36,12 +36,17 @@ describe("displayFileStatus", () => {
 
 describe("isStartEligible", () => {
   it("true_only_for_approved_pending", () => {
-    expect(isStartEligible({ is_approved: true, status: "Pending" })).toBe(true);
-    expect(isStartEligible({ is_approved: false, status: "Pending" })).toBe(false);
-    expect(isStartEligible({ is_approved: true, status: "Completed" })).toBe(false);
-    expect(isStartEligible({ is_approved: true, status: "Processing" })).toBe(false);
-    expect(isStartEligible({ is_approved: true, status: "Error" })).toBe(false);
-    expect(isStartEligible({ is_approved: true, status: "Skipped" })).toBe(false);
+    expect(isStartEligible({ is_approved: true, status: "Pending", command_args: "-c:v copy" })).toBe(true);
+    expect(isStartEligible({ is_approved: false, status: "Pending", command_args: "-c:v copy" })).toBe(false);
+    expect(isStartEligible({ is_approved: true, status: "Completed", command_args: "-c:v copy" })).toBe(false);
+    expect(isStartEligible({ is_approved: true, status: "Processing", command_args: "-c:v copy" })).toBe(false);
+    expect(isStartEligible({ is_approved: true, status: "Error", command_args: "-c:v copy" })).toBe(false);
+    expect(isStartEligible({ is_approved: true, status: "Skipped", command_args: "-c:v copy" })).toBe(false);
+  });
+
+  it("false_when_command_args_empty", () => {
+    expect(isStartEligible({ is_approved: true, status: "Pending", command_args: "" })).toBe(false);
+    expect(isStartEligible({ is_approved: true, status: "Pending", command_args: "   " })).toBe(false);
   });
 });
 
@@ -49,7 +54,7 @@ describe("isAddable", () => {
   it("isAddable_false_when_id_in_scheduledIds", () => {
     expect(
       isAddable(
-        { id: "a", is_approved: true, status: "Pending" },
+        { id: "a", is_approved: true, status: "Pending", command_args: "-c:v copy" },
         ["a"],
       ),
     ).toBe(false);
@@ -58,7 +63,7 @@ describe("isAddable", () => {
   it("isAddable_true_for_approved_pending_not_scheduled", () => {
     expect(
       isAddable(
-        { id: "a", is_approved: true, status: "Pending" },
+        { id: "a", is_approved: true, status: "Pending", command_args: "-c:v copy" },
         ["b"],
       ),
     ).toBe(true);
@@ -67,13 +72,22 @@ describe("isAddable", () => {
   it("isAddable_false_when_not_start_eligible", () => {
     expect(
       isAddable(
-        { id: "a", is_approved: false, status: "Pending" },
+        { id: "a", is_approved: false, status: "Pending", command_args: "-c:v copy" },
         [],
       ),
     ).toBe(false);
     expect(
       isAddable(
-        { id: "a", is_approved: true, status: "Completed" },
+        { id: "a", is_approved: true, status: "Completed", command_args: "-c:v copy" },
+        [],
+      ),
+    ).toBe(false);
+  });
+
+  it("isAddable_false_when_command_args_empty", () => {
+    expect(
+      isAddable(
+        { id: "a", is_approved: true, status: "Pending", command_args: "" },
         [],
       ),
     ).toBe(false);

@@ -142,12 +142,6 @@ async fn run_execute_job(
     }
 }
 
-fn pickup_eligible(file: &VideoFile) -> bool {
-    file.is_approved
-        && file.status == FileStatus::Pending
-        && !file.command_args.trim().is_empty()
-}
-
 async fn fifo_worker(
     state: Arc<JobFifoState>,
     token: tokio_util::sync::CancellationToken,
@@ -174,7 +168,7 @@ async fn fifo_worker(
                 let q = queue.lock().await;
                 q.files.iter().find(|f| f.id == file_id).cloned()
             };
-            if let Some(file) = file.filter(pickup_eligible) {
+            if let Some(file) = file.filter(crate::queue_ops::is_pickup_eligible) {
                 run_execute_job(file, ffmpeg_path.clone(), tracker.clone(), tx.clone()).await;
             }
             {

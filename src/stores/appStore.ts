@@ -1,7 +1,6 @@
 import { createSignal, createMemo } from "solid-js";
 import type { VideoFile, WorkQueue, AppSettings, View, LogEntry } from "../types";
 import type { UpdateCheckPhase } from "../lib/updates";
-import { dedupeFiles } from "../lib/dedupeFiles";
 
 // ── View ──
 export const [currentView, setCurrentView] = createSignal<View>("dashboard");
@@ -17,43 +16,6 @@ export const [workQueue, setWorkQueue] = createSignal<WorkQueue>({
 
 export const queueFiles = createMemo(() => workQueue().files);
 export const hasFiles = createMemo(() => workQueue().files.length > 0);
-
-export function addFiles(files: VideoFile[]) {
-  const isWindows = navigator.platform.includes("Win");
-  const { newFiles, skippedCount } = dedupeFiles(workQueue().files, files, isWindows);
-
-  if (skippedCount > 0) {
-    addLog({
-      timestamp: new Date().toISOString(),
-      level: "warn",
-      message: `Skipped ${skippedCount} duplicate file(s) already in queue`,
-    });
-  }
-
-  if (newFiles.length === 0) return;
-
-  setWorkQueue((q) => ({
-    ...q,
-    files: [...q.files, ...newFiles],
-    last_modified: new Date().toISOString(),
-  }));
-}
-
-export function removeFile(fileId: string) {
-  setWorkQueue((q) => ({
-    ...q,
-    files: q.files.filter((f) => f.id !== fileId),
-    last_modified: new Date().toISOString(),
-  }));
-}
-
-export function clearQueue() {
-  setWorkQueue((q) => ({
-    ...q,
-    files: [],
-    last_modified: new Date().toISOString(),
-  }));
-}
 
 export function updateFile(fileId: string, updates: Partial<VideoFile>) {
   setWorkQueue((q) => ({
@@ -81,28 +43,6 @@ export function updateQueue(updates: Partial<WorkQueue>) {
     ...q,
     ...updates,
     last_modified: new Date().toISOString(),
-  }));
-}
-
-export function setFilesProcessing(fileIds: string[]) {
-  const now = new Date().toISOString();
-  setWorkQueue((q) => ({
-    ...q,
-    files: q.files.map((f) =>
-      fileIds.includes(f.id) ? { ...f, status: "Processing" as const, updated_at: now } : f
-    ),
-    last_modified: now,
-  }));
-}
-
-export function resetProcessingFiles() {
-  const now = new Date().toISOString();
-  setWorkQueue((q) => ({
-    ...q,
-    files: q.files.map((f) =>
-      f.status === "Processing" ? { ...f, status: "Pending" as const, updated_at: now } : f
-    ),
-    last_modified: now,
   }));
 }
 

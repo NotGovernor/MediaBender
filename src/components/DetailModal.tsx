@@ -11,7 +11,7 @@ import {
   setConfirmDialogOpen,
   setConfirmDialogConfig,
   setPendingReviewRegenerateFeedback,
-  setWorkQueue,
+  patchFilesFromQueue,
   addGeneratingIds,
   settings,
   setPreflightModalOpen,
@@ -61,7 +61,7 @@ export default function DetailModal() {
     const inputPath = file()!.input_path;
     try {
       const q = await invoke<WorkQueue>("reset_file", { fileId });
-      setWorkQueue(q);
+      patchFilesFromQueue(q, [fileId]);
       addLog({
         timestamp: new Date().toISOString(),
         level: "info",
@@ -108,7 +108,7 @@ export default function DetailModal() {
           fileId,
           ffmpegPath: settings().ffmpeg_path,
         });
-        setWorkQueue(q);
+        patchFilesFromQueue(q, [fileId]);
         setScheduledIds((prev) => (prev.includes(fileId) ? prev : [...prev, fileId]));
         addLog({
           timestamp: new Date().toISOString(),

@@ -10,7 +10,6 @@ import {
   setConfirmDialogOpen,
   setConfirmDialogConfig,
   workQueue,
-  setWorkQueue,
   pendingReviewRegenerateFeedback,
   setPendingReviewRegenerateFeedback,
   addGeneratingIds,
@@ -62,12 +61,13 @@ export default function ReviewModal() {
 
   const handleApprove = async () => {
     if (!file() || frozen() || file()!.generated_command === "") return;
+    const id = file()!.id;
     try {
       const q = await invoke<WorkQueue>("approve_file", {
-        fileId: file()!.id,
+        fileId: id,
         commandArgs: commandArgs(),
       });
-      patchFilesFromQueue(q, [file()!.id]);
+      patchFilesFromQueue(q, [id]);
       addLog({
         timestamp: new Date().toISOString(),
         level: "info",
@@ -88,9 +88,10 @@ export default function ReviewModal() {
 
   const handleUnapprove = async () => {
     if (!file() || frozen()) return;
+    const id = file()!.id;
     try {
-      const q = await invoke<WorkQueue>("unapprove_file", { fileId: file()!.id });
-      setWorkQueue(q);
+      const q = await invoke<WorkQueue>("unapprove_file", { fileId: id });
+      patchFilesFromQueue(q, [id]);
       addLog({
         timestamp: new Date().toISOString(),
         level: "info",
@@ -173,9 +174,10 @@ export default function ReviewModal() {
 
   const handleSkip = async () => {
     if (!file() || frozen()) return;
+    const id = file()!.id;
     try {
-      const q = await invoke<WorkQueue>("skip_file", { fileId: file()!.id });
-      setWorkQueue(q);
+      const q = await invoke<WorkQueue>("skip_file", { fileId: id });
+      patchFilesFromQueue(q, [id]);
       addLog({
         timestamp: new Date().toISOString(),
         level: "info",
@@ -231,7 +233,7 @@ export default function ReviewModal() {
             sourceId: file()!.id,
             targetIds: targets.map((t) => t.id),
           });
-          setWorkQueue(updated);
+          patchFilesFromQueue(updated, targets.map((t) => t.id));
 
           const applied = targets.filter((t) =>
             updated.files.some((f) => f.id === t.id && f.generated_command !== "")

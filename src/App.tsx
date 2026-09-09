@@ -22,7 +22,6 @@ import {
   workQueue,
   setWorkQueue,
   addLog,
-  updateFile,
   reviewModalOpen,
   detailModalOpen,
   ffprobeRawModalOpen,
@@ -51,7 +50,7 @@ import {
 } from "./lib/fileDrop";
 import { scanPendingAfterAdd } from "./lib/scanPendingAfterAdd";
 import { clampMaxParallel } from "./lib/clampMaxParallel";
-import { applyGenerateEvent } from "./lib/applyGenerateEvent";
+import { applyGenerateEvent, applyExecutorEvent } from "./lib/applyGenerateEvent";
 import type { AddPathsResult, AppSettings, VideoFile, WorkQueue } from "./types";
 
 // Debounce helpers for auto-save
@@ -177,7 +176,9 @@ export default function App() {
         completedAt?: string;
       };
 
-      if (payload.type === "stdout" || payload.type === "stderr") {
+      const kind = applyExecutorEvent(payload);
+
+      if (kind === "log") {
         // FFmpeg output — log at debug level
         addLog({
           timestamp: new Date().toISOString(),
@@ -185,30 +186,18 @@ export default function App() {
           message: `[${payload.type}] ${payload.line ?? ""}`,
           file_id: payload.fileId,
         });
-      } else if (payload.type === "started") {
-        updateFile(payload.fileId, {
-          status: "Processing",
-          updated_at: new Date().toISOString(),
-        });
+      } else if (kind === "started") {
         addLog({
           timestamp: new Date().toISOString(),
           level: "info",
           message: `Started processing: ${payload.fileId}`,
           file_id: payload.fileId,
         });
-      } else if (payload.type === "completed") {
+      } else if (kind === "completed") {
         const success = payload.success ?? false;
         const fileId = payload.fileId;
 
         if (success) {
-          updateFile(fileId, {
-            status: "Completed",
-            output_size: payload.outputSize ?? 0,
-            error_message: "",
-            processing_duration: payload.processingDuration ?? 0,
-            completed_at: payload.completedAt ?? new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          });
           addLog({
             timestamp: new Date().toISOString(),
             level: "info",
@@ -216,13 +205,6 @@ export default function App() {
             file_id: fileId,
           });
         } else {
-          updateFile(fileId, {
-            status: "Error",
-            error_message: payload.message ?? "Processing failed",
-            processing_duration: payload.processingDuration ?? 0,
-            completed_at: payload.completedAt ?? new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          });
           addLog({
             timestamp: new Date().toISOString(),
             level: "error",

@@ -26,7 +26,7 @@ use settings_ops::{
 use queue_ops::{
     add_files as add_files_impl, add_folder as add_folder_impl, add_paths as add_paths_impl,
     apply_command_template as apply_command_template_impl, approve_file as approve_file_impl,
-    clear_files as clear_files_impl, generate_commands_snapshots, merge_generated_file,
+    clear_files as clear_files_impl, generate_commands_snapshots, try_merge_generated, MergeGenerated,
     prepare_reprocess, remove_file as remove_file_impl, reset_file as reset_file_impl,
     scan_and_analyze_snapshots, skip_file as skip_file_impl, unapprove_file as unapprove_file_impl,
 };
@@ -241,18 +241,9 @@ async fn generate_commands(
                 continue;
             }
             let mut queue = state.queue.lock().await;
-            // Skip/reset/remove can win during HTTP; do not restore Pending + command.
-            let live_ok = match queue.files.iter().find(|f| f.id == updated.id) {
-                Some(live) => !matches!(
-                    live.status,
-                    FileStatus::Skipped | FileStatus::Completed | FileStatus::Processing
-                ),
-                None => false,
-            };
-            if !live_ok {
+            if try_merge_generated(&mut queue, &updated) != MergeGenerated::Applied {
                 continue;
             }
-            merge_generated_file(&mut queue, &updated);
             persist_queue(&state.store, &mut queue)?;
             drop(queue);
             let _ = app.emit("generate-event", updated);
@@ -306,7 +297,7 @@ async fn apply_command_template(
                 continue;
             }
             if let Some(f) = queue.files.iter().find(|f| f.id == *id) {
-                if f.is_approved && f.status == FileStatus::Pending && !f.command_args.trim().is_empty() {
+                if queue_ops::is_pickup_eligible(f) {
                     to_queue.push(id.clone());
                 }
             }
