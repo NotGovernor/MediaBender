@@ -255,4 +255,47 @@ describe("FileTable", () => {
     const buttons = screen.getAllByTitle("Remove from queue") as HTMLButtonElement[];
     expect(buttons.every((b) => b.disabled)).toBe(true);
   });
+
+  it("remove_control_is_outline_trash_svg_not_emoji", () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    render(() => <FileTable />);
+
+    const btn = screen.getByTitle("Remove from queue");
+    const svg = btn.querySelector("svg");
+    expect(svg).toBeTruthy();
+    expect(svg!.getAttribute("stroke")).toBe("currentColor");
+    expect(svg!.getAttribute("viewBox")).toBe("0 0 24 24");
+    expect(svg!.getAttribute("aria-hidden")).toBe("true");
+    expect(svg!.classList.contains("w-4")).toBe(true);
+    expect(svg!.classList.contains("h-4")).toBe(true);
+    expect(svg!.querySelector("path")).toBeTruthy();
+    expect(svg!.querySelector("path")!.getAttribute("d")).toBe(
+      "M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16",
+    );
+    expect(btn.textContent).not.toContain("🗑");
+  });
+
+  it("remove_control_has_hit_target_hover_focus_and_frozen_classes", () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    render(() => <FileTable />);
+
+    const classes = screen.getByTitle("Remove from queue").className.split(/\s+/);
+    for (const token of [
+      "p-1",
+      "text-text-muted",
+      "hover:text-danger",
+      "opacity-0",
+      "group-hover:opacity-100",
+      "focus-visible:opacity-100",
+      "disabled:cursor-not-allowed",
+      "disabled:hover:text-text-muted",
+      "disabled:group-hover:opacity-30",
+      "disabled:focus-visible:opacity-30",
+    ]) {
+      expect(classes).toContain(token);
+    }
+    expect(classes).not.toContain("disabled:opacity-30");
+  });
 });
