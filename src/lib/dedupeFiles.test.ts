@@ -17,6 +17,7 @@ function makeFile(overrides: Partial<VideoFile> = {}): VideoFile {
     status: "Pending",
     is_approved: false,
     error_message: "",
+    user_notes: [],
     created_at: "2024-01-01T00:00:00Z",
     updated_at: "2024-01-01T00:00:00Z",
     input_size: 0,

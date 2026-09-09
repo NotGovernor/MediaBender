@@ -1,24 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
 import DetailModal from "./DetailModal";
-import ReviewModal from "./ReviewModal";
 import {
   setWorkQueue,
   setSelectedFileId,
   setDetailModalOpen,
   setReviewModalOpen,
   setConfirmDialogOpen,
-  setPendingReviewRegenerateFeedback,
   setSettings,
   setScheduledIds,
   setPreflightModalOpen,
+  closeModals,
   workQueue,
   selectedFileId,
+  logEntries,
+  clearLogs,
   detailModalOpen,
   reviewModalOpen,
   confirmDialogOpen,
   confirmDialogConfig,
-  pendingReviewRegenerateFeedback,
   generatingIds,
   clearGeneratingIds,
   scheduledIds,
@@ -65,6 +65,7 @@ function createMockFile(overrides: Partial<VideoFile> = {}): VideoFile {
     status: "Completed",
     is_approved: true,
     error_message: "",
+    user_notes: [],
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     input_size: 1024 * 1024 * 1024,
@@ -88,8 +89,8 @@ describe("DetailModal", () => {
     setReviewModalOpen(false);
     setConfirmDialogOpen(false);
     setSelectedFileId(null);
-    setPendingReviewRegenerateFeedback(null);
     clearGeneratingIds();
+    clearLogs();
     setScheduledIds([]);
     setPreflightModalOpen(false);
     vi.mocked(invoke).mockReset();
@@ -614,117 +615,205 @@ describe("DetailModal", () => {
     });
   });
 
+  const feedbackPlaceholder =
+    "e.g. Use 128k bitrate instead, or add -map_chapters 0...";
 
-  it("hands off to Review with pending feedback when Regenerate Command is clicked", async () => {
-    const mockFile = createMockFile();
+  async function mountDetailWithDeferredRegen() {
+    const mockFile = createMockFile({
+      error_message: "Previous encode failed",
+    });
     setWorkQueue((q) => ({ ...q, files: [mockFile] }));
     setSelectedFileId(mockFile.id);
     setDetailModalOpen(true);
 
     const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockClear();
+    let resolveInvoke: (value: unknown) => void = () => {};
+    let rejectInvoke: (reason: unknown) => void = () => {};
+    const deferred = new Promise((resolve, reject) => {
+      resolveInvoke = resolve;
+      rejectInvoke = reject;
+    });
+    vi.mocked(invoke).mockReturnValueOnce(deferred);
 
     render(() => <DetailModal />);
 
-    const textarea = screen.getByPlaceholderText(
-      "e.g. Use 128k bitrate instead, or add -map_chapters 0..."
+    const feedbackTextarea = screen.getByPlaceholderText(
+      feedbackPlaceholder,
     ) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: "Use HEVC instead" } });
+    fireEvent.input(feedbackTextarea, { target: { value: "Use HEVC instead" } });
     fireEvent.click(screen.getByText("Regenerate Command"));
 
-    expect(detailModalOpen()).toBe(false);
-    expect(reviewModalOpen()).toBe(true);
-    expect(selectedFileId()).toBe(mockFile.id);
-    expect(pendingReviewRegenerateFeedback()).toBe("Use HEVC instead");
-    expect(invoke).not.toHaveBeenCalled();
-  });
+    return { mockFile, feedbackTextarea, resolveInvoke, rejectInvoke };
+  }
 
-  it("Review generate runs after Detail Regenerate Command handoff", async () => {
-    const mockFile = createMockFile();
-    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
-    setSelectedFileId(mockFile.id);
-    setDetailModalOpen(true);
-
+  it("detail_regenerate_stays_on_detail_and_invokes_generate_commands", async () => {
+    const { mockFile } = await mountDetailWithDeferredRegen();
     const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockResolvedValueOnce({
-      output_folder: "/media/output",
-      guidelines: "",
-      files: [
-        {
-          ...mockFile,
-          output_path: "/media/output/Regenerated.mkv",
-          is_approved: false,
-          status: "Pending",
-        },
-      ],
-      created_at: new Date().toISOString(),
-      last_modified: new Date().toISOString(),
-    });
-
-    render(() => (
-      <>
-        <DetailModal />
-        <ReviewModal />
-      </>
-    ));
-
-    const textarea = screen.getByPlaceholderText(
-      "e.g. Use 128k bitrate instead, or add -map_chapters 0..."
-    ) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: "Use HEVC instead" } });
-    fireEvent.click(screen.getByText("Regenerate Command"));
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("generate_commands", {
         fileIds: [mockFile.id],
         feedback: "Use HEVC instead",
+        repair: false,
       });
     });
 
-    const updated = workQueue().files.find((f) => f.id === mockFile.id)!;
-    expect(updated.output_path).toBe("/media/output/Regenerated.mkv");
-    expect(updated.is_approved).toBe(false);
-    expect(updated.status).toBe("Pending");
-    expect(reviewModalOpen()).toBe(true);
-    expect(detailModalOpen()).toBe(false);
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(mockFile.id);
   });
 
-  it("regenerate_adds_overlay_id_without_setting_file_status_Generating", async () => {
-    const mockFile = createMockFile();
-    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
-    setSelectedFileId(mockFile.id);
-    setDetailModalOpen(true);
+  it("detail_regenerate_shows_banner_and_spinner_while_in_flight", async () => {
+    const { mockFile, feedbackTextarea, resolveInvoke } =
+      await mountDetailWithDeferredRegen();
 
-    const { invoke } = await import("@tauri-apps/api/core");
-    let resolveInvoke: (value: any) => void;
-    const deferred = new Promise<any>((resolve) => {
-      resolveInvoke = resolve;
-    });
-    vi.mocked(invoke).mockReturnValueOnce(deferred);
-
-    render(() => (
-      <>
-        <DetailModal />
-        <ReviewModal />
-      </>
-    ));
-
-    const textarea = screen.getByPlaceholderText(
-      "e.g. Use 128k bitrate instead, or add -map_chapters 0..."
-    ) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: "Use HEVC instead" } });
-    fireEvent.click(screen.getByText("Regenerate Command"));
-
-    expect(workQueue().files.find((f) => f.id === mockFile.id)!.status).not.toBe("Generating");
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(screen.getByText("Regenerating\u2026")).toBeTruthy();
+    const regenButton = screen.getByText("Regenerate Command").closest("button") as HTMLButtonElement;
+    expect(regenButton.disabled).toBe(true);
+    expect(regenButton.querySelector("svg.animate-spin")).toBeTruthy();
+    expect((screen.getByText("Reset Status") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Reprocess File") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("ffmpeg -i input.mkv output.mkv")).toBeTruthy();
+    expect(screen.getByText("Previous encode failed")).toBeTruthy();
+    expect(feedbackTextarea.value).toBe("");
     expect(generatingIds()).toContain(mockFile.id);
 
-    resolveInvoke!({
+    resolveInvoke({
       output_folder: "/media/output",
       guidelines: "",
       files: [mockFile],
       created_at: new Date().toISOString(),
       last_modified: new Date().toISOString(),
     });
+  });
+
+  it("regenerate_adds_overlay_id_without_setting_file_status_Generating", async () => {
+    const { mockFile, resolveInvoke } = await mountDetailWithDeferredRegen();
+
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(generatingIds()).toContain(mockFile.id);
+    expect(workQueue().files.find((f) => f.id === mockFile.id)!.status).not.toBe("Generating");
+    expect(screen.getByText("Generating")).toBeTruthy();
+
+    resolveInvoke({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [mockFile],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+  });
+
+  it("clears_detail_feedback_on_submit_before_invoke_resolves", async () => {
+    const { feedbackTextarea, resolveInvoke } = await mountDetailWithDeferredRegen();
+
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(feedbackTextarea.value).toBe("");
+
+    resolveInvoke({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+  });
+
+  it("restores_detail_feedback_when_regenerate_invoke_fails", async () => {
+    const { mockFile, feedbackTextarea, rejectInvoke } =
+      await mountDetailWithDeferredRegen();
+
+    expect(detailModalOpen()).toBe(true);
+    expect(screen.getByText("Regenerating\u2026")).toBeTruthy();
+
+    rejectInvoke(new Error("API rate limit exceeded"));
+
+    await waitFor(() => {
+      expect(feedbackTextarea.value).toBe("Use HEVC instead");
+    });
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(generatingIds()).not.toContain(mockFile.id);
+    expect(screen.queryByText("Regenerating\u2026")).toBeFalsy();
+  });
+
+  it("detail_regenerate_handoffs_to_review_on_success", async () => {
+    const { mockFile, resolveInvoke } = await mountDetailWithDeferredRegen();
+
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+
+    resolveInvoke({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [
+        {
+          ...mockFile,
+          status: "Pending",
+          is_approved: false,
+          error_message: "",
+        },
+      ],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+
+    await waitFor(() => {
+      expect(reviewModalOpen()).toBe(true);
+    });
+    expect(detailModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(mockFile.id);
+    const updated = workQueue().files.find((f) => f.id === mockFile.id)!;
+    expect(updated.is_approved).toBe(false);
+    expect(updated.status).toBe("Pending");
+    expect(generatingIds()).not.toContain(mockFile.id);
+  });
+
+  it("detail_regenerate_success_does_not_throw_if_selection_changes", async () => {
+    const { mockFile, resolveInvoke } = await mountDetailWithDeferredRegen();
+
+    closeModals();
+    expect(selectedFileId()).toBe(null);
+    expect(detailModalOpen()).toBe(false);
+
+    const patched = { ...mockFile, description: "Updated after regen" };
+    resolveInvoke({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [patched],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+
+    await waitFor(() => {
+      expect(generatingIds()).not.toContain(mockFile.id);
+    });
+
+    expect(workQueue().files.find((f) => f.id === mockFile.id)?.description).toBe(
+      "Updated after regen",
+    );
+    expect(logEntries().some((e) => e.message.includes("Regeneration failed"))).toBe(
+      false,
+    );
+    expect(
+      logEntries().some(
+        (e) =>
+          e.level === "info" &&
+          e.file_id === mockFile.id &&
+          e.message.includes("Regeneration complete for: TestMovie.mkv"),
+      ),
+    ).toBe(true);
+
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+    const feedbackTextarea = await waitFor(
+      () => screen.getByPlaceholderText(feedbackPlaceholder) as HTMLTextAreaElement,
+    );
+    expect(feedbackTextarea.value).toBe("");
   });
 
   it("pending_approved_shows_single_Approved_badge_without_chip", () => {
@@ -755,5 +844,211 @@ describe("DetailModal", () => {
 
     expect(screen.getAllByText("Completed").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("Approved")).toBeFalsy();
+  });
+
+  async function mountClosedDetailWithTwoFiles() {
+    const fileA = createMockFile({
+      id: "file-a",
+      input_path: "/media/movies/FileA.mkv",
+    });
+    const fileB = createMockFile({
+      id: "file-b",
+      input_path: "/media/movies/FileB.mkv",
+    });
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+    setSelectedFileId(null);
+    setDetailModalOpen(false);
+    render(() => <DetailModal />);
+    setSelectedFileId(fileA.id);
+    setDetailModalOpen(true);
+    const feedbackTextarea = await waitFor(
+      () => screen.getByPlaceholderText(feedbackPlaceholder) as HTMLTextAreaElement,
+    );
+    fireEvent.input(feedbackTextarea, { target: { value: "Use HEVC instead" } });
+    expect(feedbackTextarea.value).toBe("Use HEVC instead");
+    return { fileA, fileB, feedbackTextarea };
+  }
+
+  it("clears_detail_feedback_on_file_id_change", async () => {
+    const { fileB, feedbackTextarea } = await mountClosedDetailWithTwoFiles();
+
+    setSelectedFileId(fileB.id);
+    expect(detailModalOpen()).toBe(true);
+
+    await waitFor(() => {
+      expect(feedbackTextarea.value).toBe("");
+    });
+  });
+
+  it("clears_detail_feedback_on_closeModals", async () => {
+    const { fileB } = await mountClosedDetailWithTwoFiles();
+
+    closeModals();
+    setSelectedFileId(fileB.id);
+    setDetailModalOpen(true);
+
+    const feedbackTextarea = await waitFor(
+      () => screen.getByPlaceholderText(feedbackPlaceholder) as HTMLTextAreaElement,
+    );
+    expect(feedbackTextarea.value).toBe("");
+  });
+
+  it("shows_ask_ai_to_fix_when_status_is_Error", () => {
+    const mockFile = createMockFile({ status: "Error", error_message: "NVENC session limit" });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    const ask = screen.getByRole("button", { name: "Ask AI to fix" });
+    const errorBox = screen.getByText("Error", { selector: "label" }).closest("div");
+    expect(errorBox).toBeTruthy();
+    expect(errorBox!.contains(ask)).toBe(true);
+    expect(screen.getByText("Reset Status").closest("div")!.contains(ask)).toBe(false);
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeFalsy();
+    const body = errorBox!.querySelector("p");
+    expect(body?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["whitespace-pre-wrap", "overflow-y-auto", "max-h-32"]),
+    );
+  });
+
+  it("hides_ask_ai_to_fix_when_status_is_not_Error", () => {
+    for (const status of ["Completed", "Pending", "Processing"] as const) {
+      const mockFile = createMockFile({ id: `file-${status}`, status });
+      setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+      setSelectedFileId(mockFile.id);
+      setDetailModalOpen(true);
+
+      const { unmount } = render(() => <DetailModal />);
+
+      expect(screen.queryByRole("button", { name: "Ask AI to fix" })).toBeFalsy();
+      unmount();
+    }
+  });
+
+  it("ask_ai_to_fix_invokes_generate_commands_with_repair_true_without_feedback", async () => {
+    const mockFile = createMockFile({ status: "Error", error_message: "NVENC session limit" });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [mockFile],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+
+    render(() => <DetailModal />);
+
+    const feedbackTextarea = screen.getByPlaceholderText(
+      feedbackPlaceholder,
+    ) as HTMLTextAreaElement;
+    expect(feedbackTextarea.value).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask AI to fix" }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("generate_commands", {
+        fileIds: [mockFile.id],
+        feedback: null,
+        repair: true,
+      });
+    });
+  });
+
+  it("ask_ai_to_fix_stays_on_detail_while_in_flight_then_handoffs_review_on_success", async () => {
+    const mockFile = createMockFile({
+      status: "Error",
+      error_message: "Previous encode failed",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveInvoke: (value: unknown) => void = () => {};
+    const deferred = new Promise((resolve) => {
+      resolveInvoke = resolve;
+    });
+    vi.mocked(invoke).mockReturnValueOnce(deferred);
+
+    render(() => <DetailModal />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask AI to fix" }));
+
+    expect(detailModalOpen()).toBe(true);
+    expect(reviewModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(mockFile.id);
+    expect(screen.getByText("Regenerating\u2026")).toBeTruthy();
+    expect(generatingIds()).toContain(mockFile.id);
+    expect(screen.getByText("Generating")).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Ask AI to fix" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByText("Regenerate Command").closest("button") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect((screen.getByText("Reset Status") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Reprocess File") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeFalsy();
+
+    resolveInvoke({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [
+        {
+          ...mockFile,
+          status: "Pending",
+          is_approved: false,
+          error_message: "",
+        },
+      ],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+
+    await waitFor(() => {
+      expect(reviewModalOpen()).toBe(true);
+    });
+    expect(detailModalOpen()).toBe(false);
+    expect(selectedFileId()).toBe(mockFile.id);
+    const updated = workQueue().files.find((f) => f.id === mockFile.id)!;
+    expect(updated.is_approved).toBe(false);
+    expect(updated.status).toBe("Pending");
+    expect(generatingIds()).not.toContain(mockFile.id);
+  });
+
+  it("hides_ask_ai_to_fix_when_error_message_empty", () => {
+    const mockFile = createMockFile({ status: "Error", error_message: "" });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    expect(screen.queryByRole("button", { name: "Ask AI to fix" })).toBeFalsy();
+    expect(screen.getByText("Reset Status")).toBeTruthy();
+  });
+
+  it("error_box_preserves_multiline_error_message", () => {
+    const mockFile = createMockFile({
+      status: "Error",
+      error_message: "context line 4\nError initializing output stream",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    const body = screen.getByText(/context line 4/);
+    expect(body.textContent).toContain("Error initializing output stream");
+    expect(body.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["whitespace-pre-wrap", "overflow-y-auto", "max-h-32"]),
+    );
   });
 });

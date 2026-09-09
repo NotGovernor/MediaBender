@@ -85,6 +85,7 @@ pub(crate) fn create_video_file(path: &str, scan_root: Option<&str>) -> Option<V
         status: crate::models::FileStatus::Pending,
         is_approved: false,
         error_message: String::new(),
+        user_notes: vec![],
         created_at: now.clone(),
         updated_at: now,
         input_size,

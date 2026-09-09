@@ -212,6 +212,7 @@ async fn scan_and_analyze(
 async fn generate_commands(
     file_ids: Vec<String>,
     feedback: Option<String>,
+    repair: bool,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkQueue, String> {
@@ -256,6 +257,7 @@ async fn generate_commands(
         let results = generate_commands_snapshots(
             vec![snapshot],
             feedback.clone(),
+            repair,
             &provider,
             &output_folder,
             &naming_template,

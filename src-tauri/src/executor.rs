@@ -382,7 +382,8 @@ impl FFmpegExecutor {
     }
 }
 
-const FFMPEG_ERROR_MESSAGE_MAX: usize = 1000;
+const FFMPEG_ERROR_MESSAGE_MAX: usize = 4000;
+const FFMPEG_ERROR_MESSAGE_LINES: usize = 8;
 
 pub(crate) fn summarize_ffmpeg_failure(stderr_lines: &[String]) -> String {
     let non_progress: Vec<&str> = stderr_lines
@@ -390,19 +391,11 @@ pub(crate) fn summarize_ffmpeg_failure(stderr_lines: &[String]) -> String {
         .map(|s| s.as_str())
         .filter(|l| !is_ffmpeg_progress_line(l) && !l.trim().is_empty())
         .collect();
-    let errorish: Vec<&str> = non_progress
-        .iter()
-        .copied()
-        .filter(|l| is_ffmpeg_error_line(l))
-        .collect();
-    let pick: Vec<&str> = if !errorish.is_empty() {
-        let n = errorish.len();
-        errorish[n.saturating_sub(3)..].to_vec()
-    } else if let Some(last) = non_progress.last() {
-        vec![*last]
-    } else {
+    if non_progress.is_empty() {
         return "Transcoding failed".to_string();
-    };
+    }
+    let n = non_progress.len();
+    let pick = &non_progress[n.saturating_sub(FFMPEG_ERROR_MESSAGE_LINES)..];
     let mut out = pick.join("\n");
     if out.len() > FFMPEG_ERROR_MESSAGE_MAX {
         let mut end = FFMPEG_ERROR_MESSAGE_MAX;
@@ -419,23 +412,40 @@ fn is_ffmpeg_progress_line(line: &str) -> bool {
     t.starts_with("frame=") || (t.contains("frame=") && t.contains("fps="))
 }
 
-fn is_ffmpeg_error_line(line: &str) -> bool {
-    let l = line.to_ascii_lowercase();
-    l.contains("error")
-        || l.contains("failed")
-        || l.contains("invalid argument")
-        || l.contains("no such file")
-        || l.contains("permission denied")
-        || l.contains("unknown encoder")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{FileStatus, VideoFile};
 
     #[test]
-    fn summarize_ffmpeg_failure_prefers_last_error_lines() {
+    fn summarize_ffmpeg_failure_takes_last_eight_non_progress_lines() {
+        let mut lines = Vec::new();
+        lines.push(
+            "frame=  12 fps=  1 q=28.0 size=     256kB time=00:00:01.00 bitrate= 123.4kbits/s speed=1.0x"
+                .to_string(),
+        );
+        for i in 0..10 {
+            lines.push(format!("context line {i}"));
+        }
+        lines.push("[aac @ 0] Specified sample rate 96000 is not supported".to_string());
+        lines.push(
+            "Error initializing output stream 0:1 -- Error while opening encoder".to_string(),
+        );
+        let msg = summarize_ffmpeg_failure(&lines);
+        assert!(!msg.contains("frame="));
+        assert!(!msg.contains("exit code"));
+        assert!(!msg.contains("Some("));
+        assert!(!msg.contains("context line 0"));
+        assert!(!msg.contains("context line 1"));
+        assert!(!msg.contains("context line 2"));
+        assert!(!msg.contains("context line 3"));
+        assert!(msg.contains("context line 4"));
+        assert!(msg.contains("Specified sample rate 96000 is not supported"));
+        assert!(msg.contains("Error initializing output stream"));
+    }
+
+    #[test]
+    fn summarize_ffmpeg_failure_strips_progress_and_keeps_trailing_error_lines() {
         let lines = vec![
             "frame=  12 fps=  1 q=28.0 size=     256kB time=00:00:01.00 bitrate= 123.4kbits/s speed=1.0x".to_string(),
             "[out#0/matroska @ 0000029827418800] Error opening output //socrates/TheChasm/Media/MoviesTemp/1/Hellboy.mkv: No such file or directory".to_string(),
@@ -446,8 +456,6 @@ mod tests {
         assert!(msg.contains("Error opening output"));
         assert!(msg.contains("No such file or directory"));
         assert!(!msg.contains("frame="));
-        assert!(!msg.contains("exit code"));
-        assert!(!msg.contains("Some("));
     }
 
     #[test]
@@ -471,22 +479,20 @@ mod tests {
 
     #[test]
     fn summarize_ffmpeg_failure_caps_length() {
-        let long = format!("Error {}", "x".repeat(2000));
+        let long = format!("Error {}", "x".repeat(5000));
         let msg = summarize_ffmpeg_failure(&[long]);
-        assert!(msg.len() <= 1000);
+        assert!(msg.len() <= 4000);
         assert!(msg.starts_with("Error "));
     }
 
     #[test]
     fn summarize_ffmpeg_failure_caps_length_on_multibyte_char_boundary() {
-        // "Error " = 6 bytes + 993 ASCII 'x' = 999; 'é' is 2 bytes → 1001 total.
-        // Byte 1000 is mid-character, so String::truncate(1000) panics.
-        let mut long = format!("Error {}", "x".repeat(993));
+        let mut long = format!("Error {}", "x".repeat(3993));
         long.push('é');
-        assert_eq!(long.len(), 1001);
-        assert!(!long.is_char_boundary(1000));
+        assert_eq!(long.len(), 4001);
+        assert!(!long.is_char_boundary(4000));
         let msg = summarize_ffmpeg_failure(&[long]);
-        assert!(msg.len() <= 1000);
+        assert!(msg.len() <= 4000);
         assert!(msg.is_char_boundary(msg.len()));
         assert!(msg.starts_with("Error "));
     }
@@ -743,6 +749,7 @@ mod tests {
             status: FileStatus::Pending,
             is_approved: false,
             error_message: "".to_string(),
+            user_notes: vec![],
             created_at: "".to_string(),
             updated_at: "".to_string(),
             input_size: 0,
@@ -801,6 +808,7 @@ mod tests {
             status: FileStatus::Pending,
             is_approved: false,
             error_message: "".to_string(),
+            user_notes: vec![],
             created_at: "".to_string(),
             updated_at: "".to_string(),
             input_size: 0,
@@ -854,6 +862,7 @@ mod tests {
             status: FileStatus::Pending,
             is_approved: false,
             error_message: "".to_string(),
+            user_notes: vec![],
             created_at: "".to_string(),
             updated_at: "".to_string(),
             input_size: 0,
@@ -905,6 +914,7 @@ mod tests {
             status: FileStatus::Pending,
             is_approved: false,
             error_message: "".to_string(),
+            user_notes: vec![],
             created_at: "".to_string(),
             updated_at: "".to_string(),
             input_size: 0,
@@ -957,6 +967,7 @@ mod tests {
             status: FileStatus::Pending,
             is_approved: false,
             error_message: "".to_string(),
+            user_notes: vec![],
             created_at: "".to_string(),
             updated_at: "".to_string(),
             input_size: 0,
@@ -1009,6 +1020,7 @@ mod tests {
             status: FileStatus::Pending,
             is_approved: false,
             error_message: "".to_string(),
+            user_notes: vec![],
             created_at: "".to_string(),
             updated_at: "".to_string(),
             input_size: 0,
@@ -1120,6 +1132,7 @@ mod tests {
             status: FileStatus::Pending,
             is_approved: false,
             error_message: "".to_string(),
+            user_notes: vec![],
             created_at: "".to_string(),
             updated_at: "".to_string(),
             input_size: 0,

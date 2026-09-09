@@ -1,18 +1,20 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, Show, createEffect } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import StatusBadge from "./StatusBadge";
 import {
   detailModalOpen,
   selectedFile,
+  selectedFileId,
   closeModals,
   handoffToReview,
   addLog,
   setConfirmDialogOpen,
   setConfirmDialogConfig,
-  setPendingReviewRegenerateFeedback,
-  patchFilesFromQueue,
   addGeneratingIds,
+  removeGeneratingId,
+  generatingIds,
+  patchFilesFromQueue,
   settings,
   setPreflightModalOpen,
   setScheduledIds,
@@ -54,6 +56,22 @@ function buildSubtitle(file: ReturnType<typeof selectedFile>): string {
 export default function DetailModal() {
   const file = selectedFile;
   const [feedback, setFeedback] = createSignal("");
+  const [isRegenerating, setIsRegenerating] = createSignal(false);
+  const [regenInFlight, setRegenInFlight] = createSignal(false);
+  let lastFeedbackFileId: string | null = null;
+
+  createEffect(() => {
+    if (!file() || file()!.id !== lastFeedbackFileId) {
+      setFeedback("");
+      lastFeedbackFileId = file() ? file()!.id : null;
+    }
+  });
+
+  createEffect(() => {
+    if (!detailModalOpen()) {
+      setFeedback("");
+    }
+  });
 
   const handleResetStatus = async () => {
     if (!file()) return;
@@ -79,14 +97,72 @@ export default function DetailModal() {
     }
   };
 
-  const handleRegenerate = () => {
+  const generateInPlace = async (opts: { feedback: string | null; repair: boolean }) => {
+    if (!file()) return;
+    const id = file()!.id;
+    const inputName = file()!.input_path.split(/[/\\]/).pop();
+    const submitted = opts.feedback ?? "";
+    setFeedback("");
+
+    setIsRegenerating(true);
+    setRegenInFlight(true);
+    addLog({
+      timestamp: new Date().toISOString(),
+      level: "info",
+      message: opts.repair
+        ? `Asking AI to fix command for: ${inputName}`
+        : `Regenerating command with feedback for: ${inputName}`,
+      file_id: id,
+    });
+
+    addGeneratingIds([id]);
+    try {
+      const q = await invoke<WorkQueue>("generate_commands", {
+        fileIds: [id],
+        feedback: opts.feedback,
+        repair: opts.repair,
+      });
+      patchFilesFromQueue(q, [id]);
+
+      addLog({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        message: `Regeneration complete for: ${inputName}`,
+        file_id: id,
+      });
+
+      setFeedback("");
+      if (selectedFileId() === id) {
+        handoffToReview(id);
+      }
+    } catch (err) {
+      if (selectedFileId() === id && detailModalOpen() && submitted) {
+        setFeedback(submitted);
+      }
+      addLog({
+        timestamp: new Date().toISOString(),
+        level: "error",
+        message: `Regeneration failed: ${err}`,
+        file_id: id,
+      });
+    } finally {
+      setIsRegenerating(false);
+      setRegenInFlight(false);
+      removeGeneratingId(id);
+    }
+  };
+
+  const handleRegenerate = async () => {
     if (!file()) return;
     const fb = feedback().trim();
     if (!fb) return;
-    const fileId = file()!.id;
-    setPendingReviewRegenerateFeedback(fb);
-    handoffToReview(fileId);
-    addGeneratingIds([fileId]);
+    await generateInPlace({ feedback: fb, repair: false });
+  };
+
+  const handleAskAiToFix = async () => {
+    if (!file() || file()!.status !== "Error") return;
+    const fb = feedback().trim();
+    await generateInPlace({ feedback: fb || null, repair: true });
   };
 
   const handleReprocess = async () => {
@@ -156,7 +232,10 @@ export default function DetailModal() {
             {/* Status */}
             <div class="flex items-center gap-3">
               <span class="text-xs font-mono uppercase tracking-wider text-text-muted">Status</span>
-              <StatusBadge status={f().status} isApproved={f().is_approved} />
+              <StatusBadge
+                status={generatingIds().includes(f().id) ? "Generating" : f().status}
+                isApproved={f().is_approved}
+              />
             </div>
 
             {/* Input / Output Grid */}
@@ -241,6 +320,10 @@ export default function DetailModal() {
               </div>
             </Show>
 
+            <Show when={regenInFlight()}>
+              <p class="text-sm text-gold">Regenerating…</p>
+            </Show>
+
             {/* Command Used */}
             <Show when={f().generated_command}>
               <div>
@@ -255,11 +338,24 @@ export default function DetailModal() {
 
             {/* Error Message */}
             <Show when={f().error_message}>
-              <div class="bg-danger/10 border border-danger/20 rounded p-3">
-                <label class="block text-xs font-mono uppercase tracking-wider text-danger mb-1">
+              <div class="bg-danger/10 border border-danger/20 rounded p-3 flex flex-col gap-3">
+                <label class="block text-xs font-mono uppercase tracking-wider text-danger">
                   Error
                 </label>
-                <p class="text-sm text-danger">{f().error_message}</p>
+                <p class="text-sm text-danger whitespace-pre-wrap overflow-y-auto max-h-32">
+                  {f().error_message}
+                </p>
+                <Show when={f().status === "Error"}>
+                  <div class="flex justify-center">
+                    <button
+                      onClick={handleAskAiToFix}
+                      disabled={isRegenerating()}
+                      class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Ask AI to fix
+                    </button>
+                  </div>
+                </Show>
               </div>
             </Show>
 
@@ -280,17 +376,26 @@ export default function DetailModal() {
             <div class="flex justify-between items-center pt-2">
               <button
                 onClick={handleResetStatus}
-                disabled={file() != null && isFrozen(file()!, scheduledIds())}
-                class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 transition-colors"
+                disabled={
+                  isRegenerating() ||
+                  (file() != null && isFrozen(file()!, scheduledIds()))
+                }
+                class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 Reset Status
               </button>
               <div class="flex gap-3">
                 <button
                   onClick={handleRegenerate}
-                  disabled={!feedback().trim()}
-                  class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  disabled={isRegenerating() || !feedback().trim()}
+                  class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
                 >
+                  <Show when={isRegenerating()}>
+                    <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                  </Show>
                   Regenerate Command
                 </button>
                 <Show
@@ -302,6 +407,7 @@ export default function DetailModal() {
                   <button
                     onClick={handleReprocess}
                     disabled={
+                      isRegenerating() ||
                       isGenerating() ||
                       scheduledIds().includes(f().id) ||
                       f().status === "Processing"

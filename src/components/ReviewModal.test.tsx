@@ -8,13 +8,17 @@ import {
   selectedFileId,
   setReviewModalOpen,
   reviewModalOpen,
+  closeModals,
+  openReview,
   ffprobeRawModalOpen,
   workQueue,
   confirmDialogOpen,
   confirmDialogConfig,
-  setPendingReviewRegenerateFeedback,
-  pendingReviewRegenerateFeedback,
   setScheduledIds,
+  generatingIds,
+  setGeneratingIds,
+  detailModalOpen,
+  setDetailModalOpen,
 } from "../stores/appStore";
 import type { VideoFile } from "../types";
 
@@ -56,6 +60,7 @@ function createMockFile(overrides: Partial<VideoFile> = {}): VideoFile {
     status: "Pending",
     is_approved: false,
     error_message: "",
+    user_notes: [],
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     input_size: 1024 * 1024 * 1024,
@@ -69,8 +74,9 @@ function createMockFile(overrides: Partial<VideoFile> = {}): VideoFile {
 describe("ReviewModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    setPendingReviewRegenerateFeedback(null);
     setScheduledIds([]);
+    setGeneratingIds([]);
+    setDetailModalOpen(false);
     setWorkQueue({
       output_folder: "/media/output",
       guidelines: "",
@@ -522,6 +528,267 @@ describe("ReviewModal", () => {
     });
   });
 
+  const feedbackPlaceholder =
+    "e.g. Use 128k bitrate instead, or add -map_chapters 0...";
+
+  async function mountClosedReviewWithTwoFiles() {
+    const fileA = createMockFile({
+      id: "file-a",
+      input_path: "/media/movies/FileA.mkv",
+    });
+    const fileB = createMockFile({
+      id: "file-b",
+      input_path: "/media/movies/FileB.mkv",
+    });
+    setWorkQueue((q) => ({ ...q, files: [fileA, fileB] }));
+    setSelectedFileId(null);
+    setReviewModalOpen(false);
+    render(() => <ReviewModal />);
+    openReview(fileA.id);
+    const feedbackTextarea = await waitFor(
+      () => screen.getByPlaceholderText(feedbackPlaceholder) as HTMLTextAreaElement,
+    );
+    fireEvent.input(feedbackTextarea, { target: { value: "Use HEVC instead" } });
+    expect(feedbackTextarea.value).toBe("Use HEVC instead");
+    return { fileA, fileB, feedbackTextarea };
+  }
+
+  it("clears_review_feedback_on_file_id_change", async () => {
+    const { fileB, feedbackTextarea } = await mountClosedReviewWithTwoFiles();
+
+    setSelectedFileId(fileB.id);
+    expect(reviewModalOpen()).toBe(true);
+
+    await waitFor(() => {
+      expect(feedbackTextarea.value).toBe("");
+    });
+  });
+
+  it("clears_review_feedback_on_closeModals", async () => {
+    const { fileB } = await mountClosedReviewWithTwoFiles();
+
+    closeModals();
+    openReview(fileB.id);
+
+    const feedbackTextarea = await waitFor(
+      () => screen.getByPlaceholderText(feedbackPlaceholder) as HTMLTextAreaElement,
+    );
+    expect(feedbackTextarea.value).toBe("");
+  });
+
+  it("clears_review_feedback_on_submit_before_invoke_resolves", async () => {
+    const { fileA, feedbackTextarea } = await mountClosedReviewWithTwoFiles();
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveInvoke: (value: unknown) => void;
+    const deferred = new Promise((resolve) => {
+      resolveInvoke = resolve;
+    });
+    vi.mocked(invoke).mockReturnValueOnce(deferred);
+
+    fireEvent.click(screen.getByText("Regenerate"));
+
+    expect(feedbackTextarea.value).toBe("");
+
+    resolveInvoke!({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [
+        {
+          ...fileA,
+          generated_command: "ffmpeg -i input.mkv -c:v libx265 output.mkv",
+          command_args: "-c:v libx265",
+          description: "Transcode to HEVC",
+          reasoning: "Smaller file size",
+          error_message: "",
+          status: "Pending",
+          updated_at: new Date().toISOString(),
+        },
+      ],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+
+    await waitFor(() => {
+      const commandTextarea = screen.getByLabelText("FFmpeg Command") as HTMLTextAreaElement;
+      expect(commandTextarea.value).toBe("-c:v libx265");
+    });
+    expect(feedbackTextarea.value).toBe("");
+  });
+
+  it("restores_review_feedback_when_regenerate_invoke_fails", async () => {
+    const { fileB, feedbackTextarea } = await mountClosedReviewWithTwoFiles();
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("API rate limit exceeded"));
+
+    fireEvent.click(screen.getByText("Regenerate"));
+
+    await waitFor(() => {
+      expect(feedbackTextarea.value).toBe("Use HEVC instead");
+    });
+    expect(reviewModalOpen()).toBe(true);
+
+    setSelectedFileId(fileB.id);
+    await waitFor(() => {
+      expect(
+        (screen.getByPlaceholderText(feedbackPlaceholder) as HTMLTextAreaElement).value,
+      ).toBe("");
+    });
+  });
+
+  async function mountReviewWithDeferredRegen() {
+    const mockFile = createMockFile();
+    const laterIdle = createMockFile({
+      id: "later-idle",
+      generated_command: "",
+      command_args: "",
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile, laterIdle] }));
+    setSelectedFileId(mockFile.id);
+    setReviewModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveInvoke: (value: unknown) => void = () => {};
+    const deferred = new Promise((resolve) => {
+      resolveInvoke = resolve;
+    });
+    vi.mocked(invoke).mockReturnValueOnce(deferred);
+
+    render(() => <ReviewModal />);
+
+    const feedbackTextarea = screen.getByPlaceholderText(
+      feedbackPlaceholder,
+    ) as HTMLTextAreaElement;
+    fireEvent.input(feedbackTextarea, { target: { value: "Use HEVC instead" } });
+    fireEvent.click(screen.getByText("Regenerate"));
+
+    const resolveRegen = () => {
+      resolveInvoke({
+        output_folder: "/media/output",
+        guidelines: "",
+        files: [
+          {
+            ...mockFile,
+            generated_command: "ffmpeg -i input.mkv -c:v libx265 output.mkv",
+            command_args: "-c:v libx265",
+            description: "Transcode to HEVC",
+            reasoning: "Smaller file size",
+            error_message: "",
+            status: "Pending",
+            updated_at: new Date().toISOString(),
+          },
+          laterIdle,
+        ],
+        created_at: new Date().toISOString(),
+        last_modified: new Date().toISOString(),
+      });
+    };
+
+    return { mockFile, feedbackTextarea, resolveRegen };
+  }
+
+  it("keeps_review_open_while_regenerating", async () => {
+    const { mockFile, resolveRegen } = await mountReviewWithDeferredRegen();
+
+    expect(reviewModalOpen()).toBe(true);
+    expect(detailModalOpen()).toBe(false);
+    expect((screen.getByLabelText("FFmpeg Command") as HTMLTextAreaElement).value).toBe(
+      "-c:v copy -c:a opus",
+    );
+    expect(screen.getByText("ffmpeg -i input.mkv output.mkv")).toBeTruthy();
+    expect(generatingIds()).toContain(mockFile.id);
+    expect(workQueue().files.find((f) => f.id === mockFile.id)?.status).not.toBe("Generating");
+    expect(screen.getByText("Regenerating…")).toBeTruthy();
+    const { invoke } = await import("@tauri-apps/api/core");
+    expect(invoke).toHaveBeenCalledWith("generate_commands", {
+      fileIds: [mockFile.id],
+      feedback: "Use HEVC instead",
+      repair: false,
+    });
+
+    resolveRegen();
+
+    await waitFor(() => {
+      expect(screen.queryByText("Regenerating…")).toBeFalsy();
+    });
+    expect(reviewModalOpen()).toBe(true);
+    expect(detailModalOpen()).toBe(false);
+  });
+
+  it("disables_approve_skip_and_template_while_regenerating", async () => {
+    const { feedbackTextarea, resolveRegen } = await mountReviewWithDeferredRegen();
+
+    expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Apply to Remaining Items") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Regenerating…")).toBeTruthy();
+
+    resolveRegen();
+
+    await waitFor(() => {
+      expect(screen.queryByText("Regenerating…")).toBeFalsy();
+    });
+    expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(feedbackTextarea.value).toBe("");
+  });
+
+  it("shows_regenerating_banner_while_review_invoke_in_flight", async () => {
+    const { mockFile, feedbackTextarea, resolveRegen } = await mountReviewWithDeferredRegen();
+
+    expect(screen.getByText("Regenerating…")).toBeTruthy();
+    expect(reviewModalOpen()).toBe(true);
+    expect(detailModalOpen()).toBe(false);
+    expect((screen.getByLabelText("FFmpeg Command") as HTMLTextAreaElement).value).toBe(
+      "-c:v copy -c:a opus",
+    );
+    expect(generatingIds()).toContain(mockFile.id);
+    expect(workQueue().files.find((f) => f.id === mockFile.id)?.status).not.toBe("Generating");
+
+    resolveRegen();
+
+    await waitFor(() => {
+      expect(screen.queryByText("Regenerating…")).toBeFalsy();
+    });
+    expect(feedbackTextarea.value).toBe("");
+    expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("hides_regenerating_banner_when_review_invoke_fails", async () => {
+    const mockFile = createMockFile();
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setReviewModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    let rejectInvoke: (reason: unknown) => void = () => {};
+    const deferred = new Promise((_, reject) => {
+      rejectInvoke = reject;
+    });
+    vi.mocked(invoke).mockReturnValueOnce(deferred);
+
+    render(() => <ReviewModal />);
+
+    const feedbackTextarea = screen.getByPlaceholderText(
+      feedbackPlaceholder,
+    ) as HTMLTextAreaElement;
+    fireEvent.input(feedbackTextarea, { target: { value: "Use HEVC instead" } });
+    fireEvent.click(screen.getByText("Regenerate"));
+
+    expect(screen.getByText("Regenerating…")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(true);
+
+    rejectInvoke(new Error("API rate limit exceeded"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Regenerating…")).toBeFalsy();
+    });
+    expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("persists command_args to the store after single-file regeneration in the Review Modal", async () => {
     const mockFile = createMockFile({
       id: "regen-file",
@@ -643,6 +910,62 @@ describe("ReviewModal", () => {
     expect(screen.getByText("Applied to 1 item")).toBeTruthy();
   });
 
+  it("does_not_show_regenerating_banner_when_applying_template", async () => {
+    const source = createMockFile({
+      id: "source",
+      generated_command: "ffmpeg -i input.mkv output.mkv",
+      command_args: "-c:v copy",
+    });
+    const target = createMockFile({ id: "target", generated_command: "" });
+    setWorkQueue((q) => ({ ...q, files: [source, target] }));
+    setSelectedFileId("source");
+    setReviewModalOpen(true);
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveInvoke: (value: unknown) => void = () => {};
+    const deferred = new Promise((resolve) => {
+      resolveInvoke = resolve;
+    });
+    vi.mocked(invoke).mockReturnValueOnce(deferred);
+
+    render(() => (
+      <>
+        <ReviewModal />
+        <ConfirmDialog />
+      </>
+    ));
+
+    fireEvent.click(screen.getByLabelText("Apply to Remaining Items"));
+    fireEvent.click(screen.getByText("Apply"));
+
+    expect(screen.queryByText("Regenerating…")).toBeFalsy();
+    expect((screen.getByLabelText("Apply to Remaining Items") as HTMLButtonElement).disabled).toBe(true);
+
+    resolveInvoke({
+      output_folder: "/media/output",
+      guidelines: "",
+      files: [
+        source,
+        {
+          ...target,
+          generated_command: "ffmpeg -i /media/movies/Target.mkv /media/output/Target.mkv",
+          command_args: "-c:v copy",
+          description: "Copy video",
+          reasoning: "Fast",
+          output_path: "/media/output/Target.mkv",
+          updated_at: new Date().toISOString(),
+        },
+      ],
+      created_at: new Date().toISOString(),
+      last_modified: new Date().toISOString(),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Applied to 1 item")).toBeTruthy();
+    });
+    expect(screen.queryByText("Regenerating…")).toBeFalsy();
+  });
+
   it("keeps the modal open after Apply fails and shows error in context", async () => {
     const source = createMockFile({
       id: "source",
@@ -678,128 +1001,6 @@ describe("ReviewModal", () => {
     // Error should be visible in the logs area — but since logs are not rendered in ReviewModal,
     // we verify the modal is still open and no crash occurred.
     expect(reviewModalOpen()).toBe(true);
-  });
-
-  it("auto-regenerates with pendingReviewRegenerateFeedback when Review opens", async () => {
-    const mockFile = createMockFile({
-      generated_command: "ffmpeg -i input.mkv output.mkv",
-      is_approved: false,
-      status: "Pending",
-    });
-    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
-    setSelectedFileId(mockFile.id);
-    setPendingReviewRegenerateFeedback("Use HEVC instead");
-
-    const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === "generate_commands") {
-        expect(pendingReviewRegenerateFeedback()).toBeNull();
-        return {
-          output_folder: "/media/output",
-          guidelines: "",
-          files: [
-            {
-              ...mockFile,
-              output_path: "/media/output/Regenerated.mkv",
-              is_approved: false,
-            },
-          ],
-          created_at: new Date().toISOString(),
-          last_modified: new Date().toISOString(),
-        };
-      }
-    });
-
-    setReviewModalOpen(true);
-    render(() => <ReviewModal />);
-
-    await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("generate_commands", {
-        fileIds: [mockFile.id],
-        feedback: "Use HEVC instead",
-      });
-    });
-    expect(invoke).toHaveBeenCalledTimes(1);
-    expect(pendingReviewRegenerateFeedback()).toBeNull();
-    expect(reviewModalOpen()).toBe(true);
-    expect(selectedFileId()).toBe(mockFile.id);
-    await waitFor(() => {
-      const updated = workQueue().files.find((f) => f.id === mockFile.id)!;
-      expect(updated.output_path).toBe("/media/output/Regenerated.mkv");
-      expect(updated.is_approved).toBe(false);
-    });
-  });
-
-  it("does not auto-regenerate while Review is closed then generates when it opens", async () => {
-    const mockFile = createMockFile({
-      generated_command: "ffmpeg -i input.mkv output.mkv",
-      is_approved: false,
-      status: "Pending",
-    });
-    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
-    setSelectedFileId(mockFile.id);
-    setPendingReviewRegenerateFeedback("Use HEVC instead");
-    setReviewModalOpen(false);
-
-    const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === "generate_commands") {
-        expect(pendingReviewRegenerateFeedback()).toBeNull();
-        return {
-          output_folder: "/media/output",
-          guidelines: "",
-          files: [
-            {
-              ...mockFile,
-              output_path: "/media/output/Regenerated.mkv",
-              is_approved: false,
-            },
-          ],
-          created_at: new Date().toISOString(),
-          last_modified: new Date().toISOString(),
-        };
-      }
-    });
-
-    render(() => <ReviewModal />);
-
-    expect(invoke).not.toHaveBeenCalledWith(
-      "generate_commands",
-      expect.anything(),
-    );
-    expect(pendingReviewRegenerateFeedback()).toBe("Use HEVC instead");
-
-    setReviewModalOpen(true);
-
-    await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("generate_commands", {
-        fileIds: [mockFile.id],
-        feedback: "Use HEVC instead",
-      });
-    });
-    expect(invoke).toHaveBeenCalledTimes(1);
-    expect(pendingReviewRegenerateFeedback()).toBeNull();
-  });
-
-  it("does not auto-regenerate when pending feedback is null", async () => {
-    const mockFile = createMockFile({
-      generated_command: "ffmpeg -i input.mkv output.mkv",
-      is_approved: false,
-      status: "Pending",
-    });
-    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
-    setSelectedFileId(mockFile.id);
-    setPendingReviewRegenerateFeedback(null);
-    setReviewModalOpen(true);
-
-    const { invoke } = await import("@tauri-apps/api/core");
-
-    render(() => <ReviewModal />);
-
-    expect(invoke).not.toHaveBeenCalledWith(
-      "generate_commands",
-      expect.anything(),
-    );
   });
 
   it("disables_Approve_when_generated_command_is_empty", () => {
@@ -892,5 +1093,49 @@ describe("ReviewModal", () => {
     const button = screen.getByLabelText("Apply to Remaining Items") as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(screen.queryByText("1")).toBeFalsy();
+  });
+
+  it("shows_read_only_notes_sent_to_ai_when_user_notes_exist", () => {
+    const mockFile = createMockFile({
+      user_notes: ["keep grain", "use HEVC"],
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setReviewModalOpen(true);
+
+    render(() => <ReviewModal />);
+
+    const heading = screen.getByText("Notes sent to AI");
+    expect(heading).toBeTruthy();
+
+    const items = Array.from(
+      heading.closest("div")!.querySelectorAll("li"),
+    ).map((el) => el.textContent);
+    expect(items).toEqual(["keep grain", "use HEVC"]);
+
+    const notesSection = heading.closest("div")!;
+    expect(notesSection.querySelector("textarea")).toBeFalsy();
+    expect(notesSection.querySelector("[contenteditable]")).toBeFalsy();
+    expect(notesSection.getAttribute("contenteditable")).toBeFalsy();
+
+    const reasoning = screen.getByText("AI Reasoning");
+    const feedback = screen.getByText("Regeneration Feedback (optional)");
+    expect(
+      reasoning.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      heading.compareDocumentPosition(feedback) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("hides_notes_sent_to_ai_when_user_notes_empty", () => {
+    const mockFile = createMockFile({ user_notes: [] });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setReviewModalOpen(true);
+
+    render(() => <ReviewModal />);
+
+    expect(screen.queryByText("Notes sent to AI")).toBeFalsy();
   });
 });

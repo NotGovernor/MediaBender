@@ -100,6 +100,7 @@ export default function TopBar() {
       const q = await invoke<WorkQueue>("generate_commands", {
         fileIds: analyzedWithoutCommand,
         feedback: null,
+        repair: false,
       });
       patchFilesFromQueue(q, analyzedWithoutCommand);
 

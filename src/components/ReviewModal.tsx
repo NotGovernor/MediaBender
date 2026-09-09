@@ -1,17 +1,16 @@
-import { createSignal, Show, createEffect } from "solid-js";
+import { createSignal, Show, For, createEffect } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import {
   reviewModalOpen,
   selectedFile,
+  selectedFileId,
   closeModals,
   addLog,
   setFfprobeRawModalOpen,
   setConfirmDialogOpen,
   setConfirmDialogConfig,
   workQueue,
-  pendingReviewRegenerateFeedback,
-  setPendingReviewRegenerateFeedback,
   addGeneratingIds,
   removeGeneratingId,
   scheduledIds,
@@ -47,11 +46,17 @@ export default function ReviewModal() {
   const [commandArgs, setCommandArgs] = createSignal("");
   const [feedback, setFeedback] = createSignal("");
   const [isRegenerating, setIsRegenerating] = createSignal(false);
+  const [regenInFlight, setRegenInFlight] = createSignal(false);
   const [applyStatusMessage, setApplyStatusMessage] = createSignal("");
   const [invokeError, setInvokeError] = createSignal("");
+  let lastFeedbackFileId: string | null = null;
 
   // Update local command args when file changes
   createEffect(() => {
+    if (!file() || file()!.id !== lastFeedbackFileId) {
+      setFeedback("");
+      lastFeedbackFileId = file() ? file()!.id : null;
+    }
     if (file()) {
       setCommandArgs(file()!.command_args);
       setApplyStatusMessage("");
@@ -59,8 +64,14 @@ export default function ReviewModal() {
     }
   });
 
+  createEffect(() => {
+    if (!reviewModalOpen()) {
+      setFeedback("");
+    }
+  });
+
   const handleApprove = async () => {
-    if (!file() || frozen() || file()!.generated_command === "") return;
+    if (!file() || frozen() || isRegenerating() || file()!.generated_command === "") return;
     const id = file()!.id;
     try {
       const q = await invoke<WorkQueue>("approve_file", {
@@ -113,8 +124,11 @@ export default function ReviewModal() {
   const regenerateWithFeedback = async (fb: string) => {
     if (!file() || frozen()) return;
     const id = file()!.id;
+    const submitted = fb;
+    setFeedback("");
 
     setIsRegenerating(true);
+    setRegenInFlight(true);
     addLog({
       timestamp: new Date().toISOString(),
       level: "info",
@@ -127,6 +141,7 @@ export default function ReviewModal() {
       const q = await invoke<WorkQueue>("generate_commands", {
         fileIds: [id],
         feedback: fb,
+        repair: false,
       });
       patchFilesFromQueue(q, [id]);
 
@@ -142,6 +157,9 @@ export default function ReviewModal() {
     } catch (err) {
       const errorMsg = String(err);
       setInvokeError(errorMsg);
+      if (selectedFileId() === id && reviewModalOpen()) {
+        setFeedback(submitted);
+      }
       addLog({
         timestamp: new Date().toISOString(),
         level: "error",
@@ -150,6 +168,7 @@ export default function ReviewModal() {
       });
     } finally {
       setIsRegenerating(false);
+      setRegenInFlight(false);
       removeGeneratingId(id);
     }
   };
@@ -162,18 +181,8 @@ export default function ReviewModal() {
     await regenerateWithFeedback(fb);
   };
 
-  createEffect(() => {
-    const pending = pendingReviewRegenerateFeedback();
-    if (!pending) return;
-    if (!reviewModalOpen()) return;
-    if (!file()) return;
-    setPendingReviewRegenerateFeedback(null);
-    setFeedback(pending);
-    void regenerateWithFeedback(pending);
-  });
-
   const handleSkip = async () => {
-    if (!file() || frozen()) return;
+    if (!file() || frozen() || isRegenerating()) return;
     const id = file()!.id;
     try {
       const q = await invoke<WorkQueue>("skip_file", { fileId: id });
@@ -208,7 +217,7 @@ export default function ReviewModal() {
   };
 
   const handleApplyTemplate = () => {
-    if (!file() || frozen()) return;
+    if (!file() || frozen() || isRegenerating()) return;
     const targets = eligibleTargets();
     if (targets.length === 0) return;
 
@@ -295,6 +304,9 @@ export default function ReviewModal() {
             </Show>
 
             {/* Command */}
+            <Show when={regenInFlight()}>
+              <p class="text-sm text-gold">Regenerating…</p>
+            </Show>
             <div>
               <div class="flex items-center gap-2 mb-1">
                 <label class="block text-xs font-mono uppercase tracking-wider text-text-muted">
@@ -339,6 +351,20 @@ export default function ReviewModal() {
               </div>
             </Show>
 
+            {/* Standing notes sent to AI (read-only) */}
+            <Show when={f().user_notes.length > 0}>
+              <div>
+                <label class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1">
+                  Notes sent to AI
+                </label>
+                <ul class="text-sm text-text-secondary bg-bg-tertiary rounded p-3 space-y-1 list-disc list-inside">
+                  <For each={f().user_notes}>
+                    {(note) => <li>{note}</li>}
+                  </For>
+                </ul>
+              </div>
+            </Show>
+
             {/* Feedback */}
             <Show when={!f().is_approved}>
               <div>
@@ -359,7 +385,7 @@ export default function ReviewModal() {
               <div class="flex gap-3">
                 <button
                   onClick={handleSkip}
-                  disabled={frozen()}
+                  disabled={frozen() || isRegenerating()}
                   class="px-4 py-2 rounded text-sm font-medium bg-transparent text-gold border border-gold hover:bg-gold/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
                   Skip
@@ -419,7 +445,7 @@ export default function ReviewModal() {
                         </button>
                         <button
                           onClick={handleApprove}
-                          disabled={frozen() || f().generated_command === ""}
+                          disabled={frozen() || isRegenerating() || f().generated_command === ""}
                           class="px-4 py-2 rounded text-sm font-medium bg-gold text-bg-primary hover:bg-gold-light disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                         >
                           Approve

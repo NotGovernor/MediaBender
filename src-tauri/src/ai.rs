@@ -158,9 +158,12 @@ pub async fn generate_command(
     provider: &AiProviderConfig,
     guidelines: &str,
     metadata: &FileMetadata,
+    previous_command: &str,
+    user_notes: &[String],
+    error_message: &str,
 ) -> Result<AiResponse, AiError> {
     let system_prompt = build_system_prompt(guidelines);
-    let user_prompt = build_user_prompt(metadata);
+    let user_prompt = build_user_prompt(metadata, previous_command, user_notes, error_message);
 
     let content = chat_completion(
         provider,
@@ -237,7 +240,12 @@ Rules:
     )
 }
 
-fn build_user_prompt(metadata: &FileMetadata) -> String {
+fn build_user_prompt(
+    metadata: &FileMetadata,
+    previous_command: &str,
+    user_notes: &[String],
+    error_message: &str,
+) -> String {
     let mut audio_info = String::new();
     for stream in &metadata.audio_streams {
         audio_info.push_str(&format!(
@@ -270,7 +278,7 @@ fn build_user_prompt(metadata: &FileMetadata) -> String {
         )
     };
 
-    format!(
+    let mut prompt = format!(
         r#"Analyze this video file and generate the optimal FFmpeg transcoding command.
 
 ## File Metadata
@@ -291,8 +299,7 @@ Chapters: {}
 
 Duration: {:.2} seconds
 Bitrate: {} bps
-
-Generate the best ffmpeg command following the guidelines."#,
+"#,
         metadata.container,
         metadata.video.codec,
         metadata.video.width,
@@ -306,7 +313,49 @@ Generate the best ffmpeg command following the guidelines."#,
         if metadata.has_chapters { "Yes" } else { "No" },
         metadata.duration,
         metadata.bitrate,
-    )
+    );
+
+    if !previous_command.trim().is_empty() {
+        prompt.push_str("\n## Previous command arguments\n");
+        prompt.push_str(previous_command.trim());
+        prompt.push('\n');
+    }
+
+    if !user_notes.is_empty() {
+        prompt.push_str("\n## Standing user notes\n");
+        for note in user_notes {
+            prompt.push_str(&format!("- {}\n", note));
+        }
+    }
+
+    let error = error_message.trim();
+    let has_error = !error.is_empty();
+    let has_previous = !previous_command.trim().is_empty();
+
+    if has_error {
+        if has_previous {
+            prompt.push_str(
+                "\n## Last 8 non-progress lines of this file's FFmpeg stderr (truncated)\n",
+            );
+        } else {
+            prompt.push_str("\n## Last error\n");
+        }
+        prompt.push_str(error);
+        prompt.push('\n');
+    }
+
+    let closing = if has_error && has_previous {
+        "We attempted this transcode with the previous command arguments above (the app adds ffmpeg, -i, and the output path). It failed. Below are the last 8 non-progress stderr lines, not the full log. Propose revised arguments only — same JSON contract — honoring guidelines and standing notes. Do not invent a retry for GPU session-limit / disk-full / missing output dir / corrupt source; those need a human."
+    } else if has_error {
+        "Generation failed; propose arguments from metadata, guidelines, and standing notes."
+    } else if has_previous {
+        "Revise the previous command using the standing notes; do not silently revert earlier notes."
+    } else {
+        "Generate the best ffmpeg command following the guidelines."
+    };
+    prompt.push('\n');
+    prompt.push_str(closing);
+    prompt
 }
 
 #[cfg(test)]
@@ -354,7 +403,7 @@ mod tests {
             bitrate: 5_000_000,
         };
 
-        let prompt = build_user_prompt(&metadata);
+        let prompt = build_user_prompt(&metadata, "", &[], "");
 
         assert!(prompt.contains("Subtitle Streams (2):"), "Should contain subtitle stream count");
         assert!(prompt.contains("Stream 2: subrip codec, language: eng, title: English"), "Should contain first subtitle stream details");
@@ -388,9 +437,190 @@ mod tests {
             bitrate: 2_000_000,
         };
 
-        let prompt = build_user_prompt(&metadata);
+        let prompt = build_user_prompt(&metadata, "", &[], "");
 
         assert!(!prompt.contains("Subtitle Streams"), "Should not contain subtitle section when no streams exist");
+    }
+
+    #[test]
+    fn user_prompt_omits_previous_command_and_notes_when_empty() {
+        let metadata = FileMetadata {
+            container: "mkv".to_string(),
+            video: VideoMetadata {
+                codec: "hevc".to_string(),
+                width: 1920,
+                height: 1080,
+                hdr: false,
+                bit_depth: 8,
+                fps: 24.0,
+            },
+            audio_streams: vec![AudioStream {
+                index: 1,
+                codec: "aac".to_string(),
+                channels: 2,
+                layout: "stereo".to_string(),
+                language: Some("eng".to_string()),
+                title: None,
+            }],
+            subtitle_streams: vec![],
+            subtitle_count: 0,
+            has_chapters: false,
+            duration: 3600.0,
+            bitrate: 5_000_000,
+        };
+
+        let prompt = build_user_prompt(&metadata, "   ", &[], "  ");
+
+        assert!(prompt.contains("## File Metadata"), "Should keep the metadata block");
+        assert!(
+            !prompt.contains("## Previous command arguments"),
+            "Should omit previous command heading when argv is empty/whitespace"
+        );
+        assert!(
+            !prompt.contains("## Standing user notes"),
+            "Should omit standing notes heading when notes are empty"
+        );
+        assert!(
+            !prompt.contains("## Last FFmpeg / generate error"),
+            "Should omit error heading when error is empty/whitespace"
+        );
+        assert!(
+            prompt.contains("Generate the best ffmpeg command following the guidelines."),
+            "Should keep the default closing instruction"
+        );
+        assert!(
+            !prompt.contains("Revise the previous command"),
+            "Should not use a revise closing instruction when context is empty"
+        );
+    }
+
+    #[test]
+    fn user_prompt_includes_previous_command_notes_and_error() {
+        let metadata = FileMetadata {
+            container: "mkv".to_string(),
+            video: VideoMetadata {
+                codec: "hevc".to_string(),
+                width: 1920,
+                height: 1080,
+                hdr: false,
+                bit_depth: 8,
+                fps: 24.0,
+            },
+            audio_streams: vec![AudioStream {
+                index: 1,
+                codec: "aac".to_string(),
+                channels: 2,
+                layout: "stereo".to_string(),
+                language: Some("eng".to_string()),
+                title: None,
+            }],
+            subtitle_streams: vec![],
+            subtitle_count: 0,
+            has_chapters: false,
+            duration: 3600.0,
+            bitrate: 5_000_000,
+        };
+        let notes = vec![
+            "keep English subtitles".to_string(),
+            "prefer Opus audio".to_string(),
+        ];
+
+        let prompt = build_user_prompt(
+            &metadata,
+            "-c:v copy -c:a libopus -map 0",
+            &notes,
+            "Stream map does not match any existing streams",
+        );
+
+        assert!(prompt.contains("## File Metadata"), "Should keep the metadata block");
+        assert!(
+            prompt.contains("## Previous command arguments"),
+            "Should include previous command heading"
+        );
+        assert!(
+            prompt.contains("-c:v copy -c:a libopus -map 0"),
+            "Should include the previous argv string, not an assembled ffmpeg -i line"
+        );
+        assert!(
+            !prompt.contains("ffmpeg -i"),
+            "Must not assemble a full ffmpeg -i command line"
+        );
+        assert!(
+            prompt.contains("## Standing user notes"),
+            "Should include standing notes heading"
+        );
+        assert!(prompt.contains("- keep English subtitles"));
+        assert!(prompt.contains("- prefer Opus audio"));
+        assert!(
+            prompt.contains("## Last 8 non-progress lines of this file's FFmpeg stderr (truncated)"),
+            "Encode repair should label the stderr tail"
+        );
+        assert!(prompt.contains("Stream map does not match any existing streams"));
+        assert!(
+            prompt.contains(
+                "We attempted this transcode with the previous command arguments above (the app adds ffmpeg, -i, and the output path). It failed. Below are the last 8 non-progress stderr lines, not the full log. Propose revised arguments only — same JSON contract — honoring guidelines and standing notes. Do not invent a retry for GPU session-limit / disk-full / missing output dir / corrupt source; those need a human."
+            ),
+            "Encode repair should use the locked encode closer"
+        );
+        assert!(
+            !prompt.contains("## Last FFmpeg / generate error"),
+            "Old combined heading must not remain"
+        );
+        assert!(
+            !prompt.contains("Revise the previous command arguments to resolve this error while honoring guidelines and standing notes."),
+            "Old one-line closer must not remain"
+        );
+        assert!(
+            !prompt.contains("## Last error\n"),
+            "Encode repair must not use the generate heading"
+        );
+        assert!(
+            !prompt.contains("Generate the best ffmpeg command following the guidelines."),
+            "Should not keep the default closing instruction when error is present"
+        );
+    }
+
+    #[test]
+    fn user_prompt_generate_repair_uses_last_error_heading() {
+        let metadata = FileMetadata {
+            container: "mkv".to_string(),
+            video: VideoMetadata {
+                codec: "hevc".to_string(),
+                width: 1920,
+                height: 1080,
+                hdr: false,
+                bit_depth: 8,
+                fps: 24.0,
+            },
+            audio_streams: vec![AudioStream {
+                index: 1,
+                codec: "aac".to_string(),
+                channels: 2,
+                layout: "stereo".to_string(),
+                language: Some("eng".to_string()),
+                title: None,
+            }],
+            subtitle_streams: vec![],
+            subtitle_count: 0,
+            has_chapters: false,
+            duration: 3600.0,
+            bitrate: 5_000_000,
+        };
+
+        let prompt = build_user_prompt(
+            &metadata,
+            "   ",
+            &[],
+            "AI returned an empty command",
+        );
+        assert!(prompt.contains("## File Metadata"));
+        assert!(!prompt.contains("## Previous command arguments"));
+        assert!(prompt.contains("## Last error"), "Generate/API fail should not claim FFmpeg stderr");
+        assert!(!prompt.contains("## Last 8 non-progress lines of this file's FFmpeg stderr (truncated)"));
+        assert!(prompt.contains("AI returned an empty command"));
+        assert!(prompt.contains("Generation failed; propose arguments from metadata, guidelines, and standing notes."));
+        assert!(!prompt.contains("ffmpeg -i"));
+        assert!(!prompt.contains("Generate the best ffmpeg command following the guidelines."));
     }
 
     #[test]

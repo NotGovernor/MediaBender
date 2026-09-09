@@ -12,8 +12,6 @@ import {
   setConfirmDialogOpen,
   confirmDialogOpen,
   handoffToReview,
-  pendingReviewRegenerateFeedback,
-  setPendingReviewRegenerateFeedback,
   addGeneratingIds,
   removeGeneratingId,
   clearGeneratingIds,
@@ -77,18 +75,6 @@ describe("appStore modal helpers", () => {
     expect(detailModalOpen()).toBe(false);
     expect(reviewModalOpen()).toBe(true);
     expect(confirmDialogOpen()).toBe(true);
-  });
-
-  it("closeModals clears pendingReviewRegenerateFeedback", () => {
-    setPendingReviewRegenerateFeedback("use hevc");
-    closeModals();
-    expect(pendingReviewRegenerateFeedback()).toBeNull();
-  });
-
-  it("handoffToReview does not clear pendingReviewRegenerateFeedback", () => {
-    setPendingReviewRegenerateFeedback("use hevc");
-    handoffToReview("file-1");
-    expect(pendingReviewRegenerateFeedback()).toBe("use hevc");
   });
 });
 

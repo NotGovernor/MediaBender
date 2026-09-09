@@ -33,6 +33,7 @@ export function createMockFile(overrides: Partial<VideoFile> = {}): VideoFile {
     status: "Pending",
     is_approved: false,
     error_message: "",
+    user_notes: [],
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     input_size: 1024 * 1024 * 1024,

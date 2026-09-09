@@ -341,6 +341,14 @@ describe("TopBar", () => {
     fireEvent.click(generateButton);
 
     await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("generate_commands", {
+        fileIds: ["a"],
+        feedback: null,
+        repair: false,
+      });
+    });
+
+    await waitFor(() => {
       const files = workQueue().files;
       expect(files.find((f) => f.id === "a")!.command_args).toBe("-c:v copy -c:a opus");
     });

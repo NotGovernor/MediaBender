@@ -56,6 +56,7 @@ export interface VideoFile {
   status: FileStatus;
   is_approved: boolean;
   error_message: string;
+  user_notes: string[];
   created_at: string;
   updated_at: string;
   input_size: number;

@@ -78,6 +78,8 @@ pub struct VideoFile {
     #[serde(default)]
     pub is_approved: bool,
     pub error_message: String,
+    #[serde(default)]
+    pub user_notes: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
@@ -219,6 +221,27 @@ mod tests {
         s.max_parallel = 99;
         s.clamp_max_parallel();
         assert_eq!(s.max_parallel, 8);
+    }
+
+    #[test]
+    fn user_notes_default_empty_on_missing_json_key() {
+        let json = r#"{
+            "id": "f1",
+            "input_path": "/media/a.mkv",
+            "output_path": "",
+            "scan_root": "/media",
+            "ffprobe_raw": "",
+            "generated_command": "",
+            "command_args": "",
+            "description": "",
+            "reasoning": "",
+            "error_message": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "completed_at": ""
+        }"#;
+        let file: VideoFile = serde_json::from_str(json).expect("old queue JSON must deserialize");
+        assert_eq!(file.user_notes, Vec::<String>::new());
     }
 }
 

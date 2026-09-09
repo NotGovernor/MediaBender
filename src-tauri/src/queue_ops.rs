@@ -163,38 +163,42 @@ pub fn apply_command_template(
 pub async fn generate_commands_snapshots(
     mut snapshots: Vec<VideoFile>,
     feedback: Option<String>,
+    repair: bool,
     provider: &AiProviderConfig,
     output_folder: &str,
     naming_template: &str,
     flatten_output_folders: bool,
     guidelines: &str,
 ) -> Result<Vec<VideoFile>, String> {
-    let guidelines = match feedback {
-        Some(ref fb) if !fb.trim().is_empty() => {
-            format!("{}\n\nUser Feedback: {}", guidelines, fb.trim())
-        }
-        _ => guidelines.to_string(),
-    };
     let mut updated_files = Vec::new();
 
     for file in &mut snapshots {
-        if feedback.is_some() {
-            apply_regenerate_reset(file, feedback.as_deref());
-        }
-        // Skip items that already have command_args (unless regenerating)
-        if !file.command_args.is_empty() {
+        let Some(ctx) = generate_ctx(file, feedback.as_deref(), repair) else {
             continue;
-        }
+        };
         if let Some(ref metadata) = file.metadata {
-            match ai::generate_command(provider, &guidelines, metadata).await {
-                Ok(response) => {
-                    apply_ai_response(file, response, output_folder, naming_template, flatten_output_folders);
-                }
-                Err(e) => {
-                    file.error_message = e.to_string();
-                    file.status = FileStatus::Error;
-                }
+            let mut notes_for_prompt = ctx.notes.clone();
+            if let Some(ref note) = ctx.append_note {
+                notes_for_prompt.push(note.clone());
             }
+            let result = ai::generate_command(
+                provider,
+                guidelines,
+                metadata,
+                &ctx.previous_command,
+                &notes_for_prompt,
+                &ctx.error_for_prompt,
+            )
+            .await
+            .map_err(|e| e.to_string());
+            apply_generate_result(
+                file,
+                result,
+                output_folder,
+                naming_template,
+                flatten_output_folders,
+                feedback.as_deref(),
+            );
             file.updated_at = chrono::Utc::now().to_rfc3339();
             updated_files.push(file.clone());
         }
@@ -207,6 +211,7 @@ pub async fn generate_commands(
     queue: &mut WorkQueue,
     file_ids: Vec<String>,
     feedback: Option<String>,
+    repair: bool,
     provider: &AiProviderConfig,
     output_folder: &str,
     naming_template: &str,
@@ -222,6 +227,7 @@ pub async fn generate_commands(
     let results = generate_commands_snapshots(
         snapshots,
         feedback,
+        repair,
         provider,
         output_folder,
         naming_template,
@@ -353,6 +359,7 @@ pub fn reset_file(queue: &mut WorkQueue, id: &str) -> Result<(), String> {
     file.status = FileStatus::Pending;
     file.is_approved = false;
     file.error_message.clear();
+    file.user_notes.clear();
     file.updated_at = chrono::Utc::now().to_rfc3339();
     Ok(())
 }
@@ -497,10 +504,7 @@ pub fn add_paths(queue: &mut WorkQueue, paths: Vec<String>) -> AddPathsStats {
     stats
 }
 
-fn apply_regenerate_reset(file: &mut VideoFile, feedback: Option<&str>) {
-    if feedback.is_none() {
-        return;
-    }
+fn apply_regenerate_reset(file: &mut VideoFile) {
     file.generated_command.clear();
     file.command_args.clear();
     file.description.clear();
@@ -508,6 +512,79 @@ fn apply_regenerate_reset(file: &mut VideoFile, feedback: Option<&str>) {
     file.error_message.clear();
     file.status = FileStatus::Pending;
     file.is_approved = false;
+}
+
+pub(crate) struct GenerateCtx {
+    pub previous_command: String,
+    pub notes: Vec<String>,
+    pub error_for_prompt: String,
+    pub append_note: Option<String>,
+}
+
+pub(crate) fn generate_ctx(file: &VideoFile, feedback: Option<&str>, repair: bool) -> Option<GenerateCtx> {
+    let feedback_empty = feedback.map(|s| s.trim().is_empty()).unwrap_or(true);
+    if !repair && feedback_empty && !file.command_args.is_empty() {
+        return None;
+    }
+    let append_note = feedback
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(GenerateCtx {
+        previous_command: file.command_args.clone(),
+        notes: file.user_notes.clone(),
+        error_for_prompt: if repair {
+            file.error_message.clone()
+        } else {
+            String::new()
+        },
+        append_note,
+    })
+}
+
+pub(crate) fn apply_generate_result(
+    file: &mut VideoFile,
+    result: Result<AiResponse, String>,
+    output_folder: &str,
+    naming_template: &str,
+    flatten_output_folders: bool,
+    feedback: Option<&str>,
+) {
+    match result {
+        Ok(response) => {
+            if let Some(fb) = feedback {
+                append_user_note(&mut file.user_notes, fb);
+            }
+            apply_regenerate_reset(file);
+            apply_ai_response(
+                file,
+                response,
+                output_folder,
+                naming_template,
+                flatten_output_folders,
+            );
+        }
+        Err(e) => {
+            file.error_message = e;
+            file.status = FileStatus::Error;
+        }
+    }
+}
+
+pub(crate) fn append_user_note(notes: &mut Vec<String>, note: &str) {
+    let trimmed = note.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    notes.push(trimmed.to_string());
+    const MAX_COUNT: usize = 20;
+    const MAX_BYTES: usize = 8192;
+    while notes.len() > MAX_COUNT {
+        notes.remove(0);
+    }
+    while notes.len() > 1 && notes.iter().map(|s| s.len()).sum::<usize>() > MAX_BYTES {
+        notes.remove(0);
+    }
 }
 
 #[cfg(test)]
@@ -545,6 +622,7 @@ mod tests {
             status: FileStatus::Pending,
             is_approved: false,
             error_message: String::new(),
+            user_notes: vec![],
             created_at: chrono::Utc::now().to_rfc3339(),
             updated_at: chrono::Utc::now().to_rfc3339(),
             input_size: 0,
@@ -889,6 +967,38 @@ mod tests {
     }
 
     #[test]
+    fn apply_template_does_not_copy_user_notes() {
+        let source = create_test_video_file("source", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+            f.user_notes = vec!["keep grain".into()];
+        }));
+        let mut target = create_test_video_file("target", None);
+        target.user_notes = vec!["other".into()];
+
+        let mut queue = WorkQueue {
+            output_folder: "/transcoded".to_string(),
+            guidelines: String::new(),
+            files: vec![source, target],
+            created_at: chrono::Utc::now().to_rfc3339(),
+            last_modified: chrono::Utc::now().to_rfc3339(),
+        };
+
+        apply_command_template(
+            &mut queue,
+            "/transcoded",
+            "{name}.mkv",
+            false,
+            "source",
+            &["target".to_string()],
+        )
+        .unwrap();
+
+        let queue_target = queue.files.iter().find(|f| f.id == "target").unwrap();
+        assert_eq!(queue_target.user_notes, vec!["other".to_string()]);
+        assert_eq!(queue_target.command_args, "-c:v copy");
+    }
+
+    #[test]
     fn apply_ai_response_rejects_empty_command() {
         let mut file = create_test_video_file("file1", None);
         let response = crate::models::AiResponse {
@@ -1138,6 +1248,19 @@ mod tests {
     }
 
     #[test]
+    fn reset_file_clears_user_notes() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.status = FileStatus::Completed;
+            f.user_notes = vec!["use HEVC".into()];
+        }));
+        let mut queue = test_queue(vec![file]);
+
+        reset_file(&mut queue, "file1").unwrap();
+
+        assert!(queue.files[0].user_notes.is_empty());
+    }
+
+    #[test]
     fn prepare_reprocess_from_error_pending_approved_clears_error_keeps_args() {
         let file = create_test_video_file("file1", Some(|f| {
             f.status = FileStatus::Error;
@@ -1227,6 +1350,7 @@ mod tests {
             &mut queue,
             vec!["file1".to_string()],
             None,
+            false,
             &provider,
             "/transcoded",
             "{name}.mkv",
@@ -1247,11 +1371,115 @@ mod tests {
             f.generated_command = "ffmpeg -i in.mkv out.mkv".to_string();
         }));
 
-        apply_regenerate_reset(&mut file, Some("make it smaller"));
+        apply_regenerate_reset(&mut file);
 
         assert!(!file.is_approved);
         assert!(file.command_args.is_empty());
         assert!(file.generated_command.is_empty());
+    }
+
+    #[test]
+    fn generate_success_with_feedback_appends_user_note() {
+        let mut file = create_test_video_file("file1", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+            f.user_notes = vec!["older note".to_string()];
+            f.error_message = "stale encode error".to_string();
+        }));
+
+        let ctx = generate_ctx(&file, Some("  make it smaller  "), false).expect("should generate");
+        assert_eq!(ctx.previous_command, "-c:v copy");
+        assert_eq!(ctx.notes, vec!["older note".to_string()]);
+        assert_eq!(ctx.error_for_prompt, "");
+        assert_eq!(ctx.append_note.as_deref(), Some("make it smaller"));
+
+        apply_generate_result(
+            &mut file,
+            Ok(crate::models::AiResponse {
+                command: "-c:v libx265".to_string(),
+                description: "hevc".to_string(),
+                reasoning: String::new(),
+            }),
+            "/transcoded",
+            "{name}.mkv",
+            false,
+            Some("  make it smaller  "),
+        );
+
+        assert_eq!(
+            file.user_notes,
+            vec!["older note".to_string(), "make it smaller".to_string()]
+        );
+        assert_eq!(file.command_args, "-c:v libx265");
+    }
+
+    #[test]
+    fn generate_repair_does_not_skip_existing_command() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+            f.user_notes = vec!["standing".to_string()];
+            f.error_message = "NVENC session limit".to_string();
+        }));
+
+        let ctx = generate_ctx(&file, None, true).expect("repair should not skip");
+        assert_eq!(ctx.previous_command, "-c:v copy");
+        assert_eq!(ctx.notes, vec!["standing".to_string()]);
+        assert_eq!(ctx.error_for_prompt, "NVENC session limit");
+        assert_eq!(ctx.append_note, None);
+
+        let ctx_empty = generate_ctx(&file, Some("   "), true).expect("repair with blank feedback");
+        assert_eq!(ctx_empty.error_for_prompt, "NVENC session limit");
+        assert_eq!(ctx_empty.append_note, None);
+    }
+
+    #[test]
+    fn generate_without_feedback_or_repair_still_skips_existing_command() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.command_args = "-c:v copy".to_string();
+            f.error_message = "stale encode error".to_string();
+        }));
+
+        assert!(generate_ctx(&file, None, false).is_none());
+        assert!(generate_ctx(&file, Some(""), false).is_none());
+        assert!(generate_ctx(&file, Some("   "), false).is_none());
+
+        let first = create_test_video_file("file2", None);
+        assert!(generate_ctx(&first, None, false).is_some());
+        assert!(generate_ctx(&file, Some("make it smaller"), false).is_some());
+    }
+
+    #[test]
+    fn generate_regenerate_failure_keeps_previous_command_args() {
+        let mut file = create_test_video_file(
+            "file1",
+            Some(|f| {
+                f.command_args = "-c:v copy".to_string();
+                f.generated_command = "ffmpeg -i in.mkv -c:v copy out.mkv".to_string();
+                f.is_approved = true;
+                f.error_message = String::new();
+                f.status = FileStatus::Pending;
+                f.user_notes = vec!["standing".to_string()];
+            }),
+        );
+
+        apply_generate_result(
+            &mut file,
+            Err("AI provider unavailable".to_string()),
+            "/transcoded",
+            "{name}.mkv",
+            false,
+            Some("make it smaller"),
+        );
+
+        assert_eq!(file.command_args, "-c:v copy");
+        assert_eq!(
+            file.generated_command,
+            "ffmpeg -i in.mkv -c:v copy out.mkv"
+        );
+        assert_eq!(file.error_message, "AI provider unavailable");
+        assert_eq!(file.status, FileStatus::Error);
+        assert!(!file.command_args.is_empty());
+        assert!(!file.generated_command.is_empty());
+        assert_eq!(file.user_notes, vec!["standing".to_string()]);
     }
 
     #[test]
@@ -1600,5 +1828,42 @@ mod tests {
             assert_ne!(queue.files[0].ffprobe_raw, "raw");
             assert_eq!(queue.files[0].ffprobe_raw, pre_raw);
         }
+    }
+
+    #[test]
+    fn append_user_note_ignores_blank() {
+        let mut notes = vec!["keep".to_string()];
+        append_user_note(&mut notes, "");
+        append_user_note(&mut notes, "   ");
+        append_user_note(&mut notes, "\t\n");
+        assert_eq!(notes, vec!["keep".to_string()]);
+    }
+
+    #[test]
+    fn append_user_note_keeps_last_20() {
+        let mut notes = Vec::new();
+        for i in 0..21 {
+            append_user_note(&mut notes, &format!("n{i}"));
+        }
+        assert_eq!(notes.len(), 20);
+        assert_eq!(notes[0], "n1");
+        assert_eq!(notes[19], "n20");
+    }
+
+    #[test]
+    fn append_user_note_drops_oldest_when_joined_exceeds_8192() {
+        let mut notes = vec!["a".repeat(4000), "b".repeat(4000)];
+        append_user_note(&mut notes, &"c".repeat(2000));
+        // 4000+4000+2000 = 10000 > 8192; drop oldest until under cap
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0], "b".repeat(4000));
+        assert_eq!(notes[1], "c".repeat(2000));
+        assert_eq!(notes.iter().map(|s| s.len()).sum::<usize>(), 6000);
+
+        // Single note over 8192 bytes is kept (stop at len == 1)
+        let mut oversized = Vec::new();
+        append_user_note(&mut oversized, &"x".repeat(9000));
+        assert_eq!(oversized.len(), 1);
+        assert_eq!(oversized[0].len(), 9000);
     }
 }

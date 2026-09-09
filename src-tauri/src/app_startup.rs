@@ -87,6 +87,7 @@ mod tests {
             status,
             is_approved: false,
             error_message: String::new(),
+            user_notes: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             input_size: 0,
