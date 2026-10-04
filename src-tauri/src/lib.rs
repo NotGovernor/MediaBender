@@ -29,7 +29,7 @@ use queue_ops::{
     clear_files as clear_files_impl, generate_commands_snapshots, try_merge_generated, MergeGenerated,
     merge_probed_file, prepare_reprocess, probe_gate, probe_one_snapshot,
     remove_file as remove_file_impl, reset_file as reset_file_impl, skip_file as skip_file_impl,
-    unapprove_file as unapprove_file_impl,
+    unapprove_file as unapprove_file_impl, explicit_regenerate, refused_explicit_generate_err,
 };
 use tauri::Emitter;
 
@@ -241,7 +241,7 @@ async fn generate_commands(
     let mut allowed = Vec::new();
     for snap in snapshots {
         if ensure_id_not_frozen(&state, &snap.id).await.is_err() {
-            if feedback.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+            if explicit_regenerate(feedback.as_deref(), repair) {
                 return Err("File is in the encode queue".into());
             }
             continue;
@@ -254,6 +254,7 @@ async fn generate_commands(
     }
 
     for snapshot in allowed {
+        let origin_status = snapshot.status.clone();
         let results = generate_commands_snapshots(
             vec![snapshot],
             feedback.clone(),
@@ -267,10 +268,15 @@ async fn generate_commands(
         .await?;
         for updated in results {
             if ensure_id_not_frozen(&state, &updated.id).await.is_err() {
+                if explicit_regenerate(feedback.as_deref(), repair) {
+                    return Err("File is in the encode queue".into());
+                }
                 continue;
             }
             let mut queue = state.queue.lock().await;
-            if try_merge_generated(&mut queue, &updated) != MergeGenerated::Applied {
+            let merge = try_merge_generated(&mut queue, &updated, &origin_status);
+            refused_explicit_generate_err(merge, feedback.as_deref(), repair)?;
+            if merge != MergeGenerated::Applied {
                 continue;
             }
             persist_queue(&state.store, &mut queue)?;

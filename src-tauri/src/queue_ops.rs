@@ -250,21 +250,48 @@ pub enum MergeGenerated {
 }
 
 /// Merge an HTTP generate result onto the live Work Queue row.
-/// Refuses Skipped / Completed / Processing and missing ids so a skip/reset
-/// that won during HTTP is not undone. Frozen (FIFO) is the caller's check.
-pub fn try_merge_generated(queue: &mut WorkQueue, updated: &VideoFile) -> MergeGenerated {
+/// Refuses Skipped / Processing and missing ids so a skip that won during HTTP
+/// is not undone. Refuses Completed unless `origin` was already Completed
+/// (intentional regen of a finished item). Frozen (FIFO) is the caller's check.
+pub fn try_merge_generated(
+    queue: &mut WorkQueue,
+    updated: &VideoFile,
+    origin: &FileStatus,
+) -> MergeGenerated {
     match queue.files.iter_mut().find(|f| f.id == updated.id) {
         Some(slot) => {
             if matches!(
                 slot.status,
-                FileStatus::Skipped | FileStatus::Completed | FileStatus::Processing
+                FileStatus::Skipped | FileStatus::Processing
             ) {
+                return MergeGenerated::Refused;
+            }
+            if slot.status == FileStatus::Completed && *origin != FileStatus::Completed {
                 return MergeGenerated::Refused;
             }
             *slot = updated.clone();
             MergeGenerated::Applied
         }
         None => MergeGenerated::Refused,
+    }
+}
+
+pub fn explicit_regenerate(feedback: Option<&str>, repair: bool) -> bool {
+    repair || feedback.map(|s| !s.trim().is_empty()).unwrap_or(false)
+}
+
+pub fn refused_explicit_generate_err(
+    merge: MergeGenerated,
+    feedback: Option<&str>,
+    repair: bool,
+) -> Result<(), String> {
+    if merge == MergeGenerated::Applied {
+        return Ok(());
+    }
+    if explicit_regenerate(feedback, repair) {
+        Err("Could not apply regenerated command".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -1719,7 +1746,10 @@ mod tests {
             f.command_args = "-c:v copy".to_string();
             f.description = "copy".to_string();
         }));
-        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Applied);
+        assert_eq!(
+            try_merge_generated(&mut queue, &updated, &FileStatus::Pending),
+            MergeGenerated::Applied
+        );
         assert_eq!(queue.files[0].command_args, "-c:v copy");
         assert_eq!(queue.files[0].description, "copy");
     }
@@ -1736,7 +1766,10 @@ mod tests {
             f.command_args = "-c:v copy".to_string();
             f.error_message.clear();
         }));
-        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Applied);
+        assert_eq!(
+            try_merge_generated(&mut queue, &updated, &FileStatus::Error),
+            MergeGenerated::Applied
+        );
         assert_eq!(queue.files[0].status, FileStatus::Pending);
         assert_eq!(queue.files[0].command_args, "-c:v copy");
     }
@@ -1748,11 +1781,15 @@ mod tests {
         let updated = create_test_video_file("a", Some(|f| {
             f.command_args = "-c:v copy".to_string();
         }));
-        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Refused);
+        assert_eq!(
+            try_merge_generated(&mut queue, &updated, &FileStatus::Pending),
+            MergeGenerated::Refused
+        );
         assert!(queue.files[0].command_args.is_empty());
         assert_eq!(queue.files[0].status, FileStatus::Skipped);
     }
 
+    // Race: origin was Pending; encode finished during HTTP.
     #[test]
     fn try_merge_generated_refuses_completed() {
         let live = create_test_video_file("a", Some(|f| f.status = FileStatus::Completed));
@@ -1760,7 +1797,10 @@ mod tests {
         let updated = create_test_video_file("a", Some(|f| {
             f.command_args = "-c:v copy".to_string();
         }));
-        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Refused);
+        assert_eq!(
+            try_merge_generated(&mut queue, &updated, &FileStatus::Pending),
+            MergeGenerated::Refused
+        );
         assert_eq!(queue.files[0].status, FileStatus::Completed);
         assert!(queue.files[0].command_args.is_empty());
     }
@@ -1772,7 +1812,10 @@ mod tests {
         let updated = create_test_video_file("a", Some(|f| {
             f.command_args = "-c:v copy".to_string();
         }));
-        assert_eq!(try_merge_generated(&mut queue, &updated), MergeGenerated::Refused);
+        assert_eq!(
+            try_merge_generated(&mut queue, &updated, &FileStatus::Pending),
+            MergeGenerated::Refused
+        );
         assert_eq!(queue.files[0].status, FileStatus::Processing);
     }
 
@@ -1782,9 +1825,100 @@ mod tests {
         let other = create_test_video_file("nope", Some(|f| {
             f.command_args = "-c:v copy".to_string();
         }));
-        assert_eq!(try_merge_generated(&mut queue, &other), MergeGenerated::Refused);
+        assert_eq!(
+            try_merge_generated(&mut queue, &other, &FileStatus::Pending),
+            MergeGenerated::Refused
+        );
         assert_eq!(queue.files.len(), 1);
         assert!(queue.files[0].command_args.is_empty());
+    }
+
+    #[test]
+    fn try_merge_generated_applies_completed_when_origin_completed() {
+        let live = create_test_video_file("a", Some(|f| {
+            f.status = FileStatus::Completed;
+            f.is_approved = true;
+            f.command_args = "-c:v copy".to_string();
+            f.generated_command = "ffmpeg -i in.mkv out.mkv".to_string();
+        }));
+        let mut queue = test_queue(vec![live]);
+        let updated = create_test_video_file("a", Some(|f| {
+            f.status = FileStatus::Pending;
+            f.is_approved = false;
+            f.command_args = "-c:v libx265".to_string();
+            f.generated_command = "ffmpeg -i in.mkv -c:v libx265 out.mkv".to_string();
+            f.user_notes = vec!["keep grain".to_string()];
+        }));
+        assert_eq!(
+            try_merge_generated(&mut queue, &updated, &FileStatus::Completed),
+            MergeGenerated::Applied
+        );
+        assert_eq!(queue.files[0].status, FileStatus::Pending);
+        assert!(!queue.files[0].is_approved);
+        assert_eq!(queue.files[0].command_args, "-c:v libx265");
+        assert_eq!(queue.files[0].user_notes, vec!["keep grain".to_string()]);
+    }
+
+    #[test]
+    fn explicit_regenerate_true_for_feedback_or_repair() {
+        assert!(!explicit_regenerate(None, false));
+        assert!(!explicit_regenerate(Some(""), false));
+        assert!(!explicit_regenerate(Some("   "), false));
+        assert!(explicit_regenerate(Some("keep grain"), false));
+        assert!(explicit_regenerate(None, true));
+        assert!(explicit_regenerate(Some(""), true));
+    }
+
+    #[test]
+    fn refused_explicit_generate_err_only_when_explicit() {
+        assert!(refused_explicit_generate_err(MergeGenerated::Applied, Some("x"), false).is_ok());
+        assert!(refused_explicit_generate_err(MergeGenerated::Refused, None, false).is_ok());
+        assert!(refused_explicit_generate_err(MergeGenerated::Refused, Some("   "), false).is_ok());
+        let err = refused_explicit_generate_err(MergeGenerated::Refused, Some("keep grain"), false)
+            .expect_err("feedback regen must fail closed");
+        assert_eq!(err, "Could not apply regenerated command");
+        let err = refused_explicit_generate_err(MergeGenerated::Refused, None, true)
+            .expect_err("repair must fail closed");
+        assert_eq!(err, "Could not apply regenerated command");
+    }
+
+    #[test]
+    fn completed_regen_snapshot_merges_pending_unapproved_with_note() {
+        let live = create_test_video_file("a", Some(|f| {
+            f.status = FileStatus::Completed;
+            f.is_approved = true;
+            f.command_args = "-c:v copy".to_string();
+            f.generated_command = "ffmpeg -i in.mkv out.mkv".to_string();
+        }));
+        let origin = live.status.clone();
+        let mut queue = test_queue(vec![live.clone()]);
+
+        let mut snapshot = live;
+        apply_generate_result(
+            &mut snapshot,
+            Ok(crate::models::AiResponse {
+                command: "-c:v libx265".to_string(),
+                description: "hevc".to_string(),
+                reasoning: String::new(),
+            }),
+            "/transcoded",
+            "{name}.mkv",
+            false,
+            Some("keep grain"),
+        );
+        assert_eq!(snapshot.status, FileStatus::Pending);
+        assert!(!snapshot.is_approved);
+        assert_eq!(snapshot.user_notes, vec!["keep grain".to_string()]);
+
+        assert_eq!(
+            try_merge_generated(&mut queue, &snapshot, &origin),
+            MergeGenerated::Applied
+        );
+        assert_eq!(queue.files[0].status, FileStatus::Pending);
+        assert!(!queue.files[0].is_approved);
+        assert_eq!(queue.files[0].command_args, "-c:v libx265");
+        assert_eq!(queue.files[0].user_notes, vec!["keep grain".to_string()]);
+        assert_eq!(queue.files[0].error_message, "");
     }
 
     #[test]
