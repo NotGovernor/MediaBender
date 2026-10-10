@@ -95,6 +95,25 @@ describe("applyExecutorEvent", () => {
     expect(f.completed_at).toBe("ts");
   });
 
+  it("apply_executor_completed_keeps_user_notes", () => {
+    const live = createMockFile({
+      id: "a",
+      status: "Processing",
+      user_notes: ["keep grain"],
+    });
+    setWorkQueue((q) => ({ ...q, files: [live] }));
+    applyExecutorEvent({
+      type: "completed",
+      fileId: "a",
+      success: true,
+      message: "ok",
+      outputSize: 12,
+      processingDuration: 1.5,
+      completedAt: "ts",
+    });
+    expect(workQueue().files[0].user_notes).toEqual(["keep grain"]);
+  });
+
   it("apply_executor_completed_failure_sets_Error", () => {
     const live = createMockFile({ id: "a", status: "Processing" });
     setWorkQueue((q) => ({ ...q, files: [live] }));

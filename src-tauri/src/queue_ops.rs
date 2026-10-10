@@ -1338,6 +1338,44 @@ mod tests {
     }
 
     #[test]
+    fn prepare_reprocess_keeps_user_notes() {
+        let file = create_test_video_file("file1", Some(|f| {
+            f.status = FileStatus::Completed;
+            f.is_approved = true;
+            f.command_args = "-c:v copy".to_string();
+            f.generated_command = "ffmpeg -i in.mkv out.mkv".to_string();
+            f.user_notes = vec!["keep grain".to_string(), "use HEVC".to_string()];
+        }));
+        let mut queue = test_queue(vec![file]);
+
+        prepare_reprocess(&mut queue, "file1").unwrap();
+
+        assert_eq!(
+            queue.files[0].user_notes,
+            vec!["keep grain".to_string(), "use HEVC".to_string()]
+        );
+        let ctx = generate_ctx(&queue.files[0], Some("don't crush blacks"), false)
+            .expect("regen after reprocess");
+        assert_eq!(
+            ctx.notes,
+            vec!["keep grain".to_string(), "use HEVC".to_string()]
+        );
+    }
+
+    #[test]
+    fn apply_regenerate_reset_keeps_user_notes() {
+        let mut file = create_test_video_file("file1", Some(|f| {
+            f.is_approved = true;
+            f.command_args = "-c:v copy".to_string();
+            f.user_notes = vec!["keep grain".to_string()];
+        }));
+
+        apply_regenerate_reset(&mut file);
+
+        assert_eq!(file.user_notes, vec!["keep grain".to_string()]);
+    }
+
+    #[test]
     fn prepare_reprocess_rejects_empty_command_args() {
         let file = create_test_video_file("file1", Some(|f| {
             f.status = FileStatus::Error;

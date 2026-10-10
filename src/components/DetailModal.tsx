@@ -1,4 +1,4 @@
-import { createSignal, Show, createEffect } from "solid-js";
+import { createSignal, Show, For, createEffect } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import StatusBadge from "./StatusBadge";
@@ -356,6 +356,20 @@ export default function DetailModal() {
                     </button>
                   </div>
                 </Show>
+              </div>
+            </Show>
+
+            {/* Standing notes sent to AI (read-only) */}
+            <Show when={f().user_notes.length > 0}>
+              <div>
+                <label class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1">
+                  Notes sent to AI
+                </label>
+                <ul class="text-sm text-text-secondary bg-bg-tertiary rounded p-3 space-y-1 list-disc list-inside">
+                  <For each={f().user_notes}>
+                    {(note) => <li>{note}</li>}
+                  </For>
+                </ul>
               </div>
             </Show>
 

@@ -195,6 +195,46 @@ describe("DetailModal", () => {
     expect(screen.queryByText("AI Reasoning")).toBeFalsy();
   });
 
+  it("shows_read_only_notes_sent_to_ai_when_user_notes_exist", () => {
+    const mockFile = createMockFile({
+      status: "Completed",
+      user_notes: ["keep grain", "use HEVC"],
+    });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    const heading = screen.getByText("Notes sent to AI");
+    expect(heading).toBeTruthy();
+
+    const items = Array.from(
+      heading.closest("div")!.querySelectorAll("li"),
+    ).map((el) => el.textContent);
+    expect(items).toEqual(["keep grain", "use HEVC"]);
+
+    const notesSection = heading.closest("div")!;
+    expect(notesSection.querySelector("textarea")).toBeFalsy();
+    expect(notesSection.querySelector("[contenteditable]")).toBeFalsy();
+
+    const feedback = screen.getByText("Regeneration Feedback (optional)");
+    expect(
+      heading.compareDocumentPosition(feedback) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("hides_notes_sent_to_ai_when_user_notes_empty", () => {
+    const mockFile = createMockFile({ user_notes: [] });
+    setWorkQueue((q) => ({ ...q, files: [mockFile] }));
+    setSelectedFileId(mockFile.id);
+    setDetailModalOpen(true);
+
+    render(() => <DetailModal />);
+
+    expect(screen.queryByText("Notes sent to AI")).toBeFalsy();
+  });
+
   it("renders command display box with dark background and gold text", () => {
     const mockFile = createMockFile({ generated_command: "ffmpeg -i input.mkv output.mkv" });
     setWorkQueue((q) => ({ ...q, files: [mockFile] }));
